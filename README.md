@@ -1,7 +1,8 @@
 # Eclipse Photography Automation
 
 Skyfield for local contact timing (C1-C4, max eclipse) + python-gphoto2 for
-firing the right exposure bracket at the right moment on a Nikon D5200.
+firing the right exposure bracket at the right moment on a Nikon D5200 (though it should work for many Nikon cameras, 
+as long as they're compatible with gphoto2).
 One config file to edit the day before, everything else is pre-tested.
 
 **⚠️ Safety first:** never look at the sun, or point an unfiltered lens/
@@ -50,7 +51,7 @@ uv run eclipse-timings
 uv run eclipse-timings --write
 ```
 
-**Weeks before, with the D5200 attached** (indoors, pointed at a lamp —
+**Weeks before, with the camera attached** (indoors, pointed at a lamp —
 you're measuring throughput, not exposure quality):
 
 ```bash
@@ -98,7 +99,7 @@ src/eclipse/
   timings.py            <- Skyfield: root-finds C1-C4, max eclipse
   camera.py              <- python-gphoto2 wrapper (lazy import, dry-run mode)
   bracket_plans.py        <- exposure sequences per phase + trim-to-fit math
-  throughput_test.py     <- run weeks ahead to measure real D5200 fps
+  throughput_test.py     <- run weeks ahead to measure real camera fps
   run_eclipse.py           <- scheduler: sleeps to each event, fires sequences
 scripts/
   pull_from_card.py       <- post-event download helper (not timing-critical)

@@ -1,0 +1,19 @@
+# Python / uv
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+
+# Project-specific — large binary and site-specific / run-specific data
+de440s.bsp
+eclipse_frames/
+eclipse_run.log
+config.yaml
+
+# macOS
+.DS_Store
+
+*.lock

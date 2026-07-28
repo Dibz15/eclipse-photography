@@ -1,0 +1,30 @@
+# Copy this to config.yaml (already done for you — config.yaml is
+# gitignored so your real site coordinates don't end up in version
+# control). config.yaml is the ONLY file you should need to touch
+# the day before the eclipse.
+
+location:
+  latitude: 0.0        # decimal degrees, + N
+  longitude: 0.0        # decimal degrees, + E
+  elevation_m: 0        # helps refraction/altitude accuracy slightly
+
+date: "2026-08-12"      # eclipse date (UTC-naive; see timezone below)
+timezone: "America/Denver"
+
+camera:
+  port: null             # optional, e.g. "usb:001,005" — leave null to auto-detect
+  measured_max_fps: null # filled in by `uv run eclipse-throughput --write`
+
+output_dir: "./eclipse_frames"
+
+# Filled in by `uv run eclipse-timings --write`, after you've cross-checked
+# the numbers against EclipseWise or the USNO calculator for your exact
+# site. run_eclipse.py reads these directly — no live computation, and no
+# internet dependency, on eclipse morning.
+#
+# timings_utc:
+#   C1: "17:01:23"   # partial begins
+#   C2: "18:23:47"   # totality begins (diamond ring / Baily's beads out)
+#   max: "18:25:36"
+#   C3: "18:27:25"   # totality ends (diamond ring / Baily's beads in)
+#   C4: "19:48:02"   # partial ends

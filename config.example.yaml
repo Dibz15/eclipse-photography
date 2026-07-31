@@ -14,6 +14,12 @@ timezone: "America/Denver"
 camera:
   port: null             # optional, e.g. "usb:001,005" — leave null to auto-detect
   measured_max_fps: null # filled in by `uv run eclipse-throughput --write`
+  image_quality: null    # e.g. "NEF (Raw)", "JPEG Fine" -- exact strings are
+                          # camera/driver-specific. Run
+                          # `uv run eclipse-throughput --list-image-quality`
+                          # to see your camera's real choices, then paste one
+                          # here. Leave null to not touch it (inherits whatever
+                          # is already set on the camera).
 
 output_dir: "./eclipse_frames"
 

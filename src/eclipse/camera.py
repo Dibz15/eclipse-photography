@@ -98,6 +98,14 @@ def _apply_static_settings(camera, plan: dict) -> None:
     if "aperture" in plan:
         set_config(camera, "aperture", plan["aperture"])
 
+def get_config_choices(camera, name: str) -> list[str]:
+    """Returns the valid choice strings for a RADIO/MENU config node (e.g.
+    'imagequality'). These vary by camera model and even libgphoto2
+    version, so discover them from the actual connected camera rather than
+    hardcoding a guess — see throughput_test.py --list-image-quality."""
+    cfg = camera.get_config()
+    node = cfg.get_child_by_name(name)
+    return list(node.get_choices())
 
 def run_burst(camera, plan: dict, fps: float | None = None) -> int:
     """diamond_ring_burst-style plan: fixed exposure, max fps, for

@@ -1,7 +1,7 @@
 # Eclipse Photography Automation
 
 Skyfield for local contact timing (C1-C4, max eclipse) + python-gphoto2 for
-firing the right exposure bracket at the right moment on a Nikon D5200 (though it should work for many Nikon cameras, 
+firing the right exposure bracket at the right moment on a Nikon D5200 (though it should work for many Nikon DSLRs, 
 as long as they're compatible with gphoto2).
 One config file to edit the day before, everything else is pre-tested.
 

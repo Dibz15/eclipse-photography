@@ -53,7 +53,12 @@ class DryRunCamera:
 # Real camera
 # --------------------------------------------------------------------------
 
-def connect(port: str | None = None, dry_run: bool = False):
+def connect(
+    port: str | None = None,
+    dry_run: bool = False,
+    capture_target: str | None = None,
+    enforce_capture_target: bool = True,
+):
     if dry_run:
         log.info("Dry run: using simulated camera, no hardware required.")
         return DryRunCamera()
@@ -73,6 +78,10 @@ def connect(port: str | None = None, dry_run: bool = False):
             )
     camera.init()
     log.info("Connected to camera%s", f" on {port}" if port else " (auto-detected)")
+
+    if enforce_capture_target:
+        _force_capture_target_to_card(camera, override=capture_target)
+
     return camera
 
 
@@ -82,6 +91,79 @@ def set_config(camera, name: str, value):
     node.set_value(value)
     camera.set_config(cfg)
 
+
+def get_config_choices(camera, name: str) -> list[str]:
+    """Returns the valid choice strings for a RADIO/MENU config node (e.g.
+    'imagequality'). These vary by camera model and even libgphoto2
+    version, so discover them from the actual connected camera rather than
+    hardcoding a guess — see throughput_test.py --list-image-quality."""
+    cfg = camera.get_config()
+    node = cfg.get_child_by_name(name)
+    return list(node.get_choices())
+
+
+def pick_card_choice(choices: list[str]) -> str | None:
+    """Case-insensitive match for the 'write to memory card' choice among
+    capturetarget's options (seen across cameras/drivers as e.g. 'Memory
+    card') — returns None if nothing matches."""
+    return next((c for c in choices if "card" in c.lower()), None)
+
+
+def _force_capture_target_to_card(camera, override: str | None = None) -> None:
+    """Every bracket plan in this project assumes captures survive on the
+    card without being downloaded during the event. Many camera/driver
+    combinations default `capturetarget` to the camera's small internal
+    RAM buffer instead — gphoto2's own docs: "setting this to sdram will
+    make the camera capture directly into the camera RAM and not on the
+    memory card. You need to download the image in the same gphoto2 call,
+    otherwise it will [be] gone when the connection is closed." Left
+    unset, captures silently vanish, and a burst long enough can overflow
+    that RAM buffer and hang the camera entirely.
+
+    By default this auto-detects the right choice (whichever contains
+    "card") and enforces it — there's no legitimate reason this project
+    would ever want Internal RAM, unlike image_quality where JPEG vs RAW
+    is a real preference. If `override` is given (from config.yaml's
+    camera.capture_target — set this only if auto-detection picks the
+    wrong choice on your camera), it's used instead, after validating it's
+    actually one of the camera's real choices.
+
+    Either way, this reads the value back to confirm the change actually
+    took — some Nikon bodies/driver versions have been reported not to
+    apply it — raising loudly rather than risking lost frames on eclipse
+    morning.
+    """
+    choices = get_config_choices(camera, "capturetarget")
+
+    if override is not None:
+        if override not in choices:
+            raise RuntimeError(
+                f"config.yaml's camera.capture_target={override!r} is not one "
+                f"of this camera's capturetarget choices: {choices!r}"
+            )
+        card_choice = override
+    else:
+        card_choice = pick_card_choice(choices)
+        if card_choice is None:
+            raise RuntimeError(
+                f"No 'memory card' choice found in capturetarget options: {choices!r} "
+                "— set camera.capture_target explicitly in config.yaml (see "
+                "`eclipse-throughput --list-capture-target`), or check "
+                "`gphoto2 --get-config capturetarget` directly."
+            )
+
+    set_config(camera, "capturetarget", card_choice)
+
+    cfg = camera.get_config()
+    node = cfg.get_child_by_name("capturetarget")
+    actual = node.get_value()
+    if actual != card_choice:
+        raise RuntimeError(
+            f"Tried to set capturetarget to {card_choice!r} but camera still "
+            f"reports {actual!r} — captures may be going to internal RAM "
+            "and will NOT survive without downloading."
+        )
+    log.info("capturetarget confirmed set to %r", card_choice)
 
 def capture_one(camera):
     if isinstance(camera, DryRunCamera):
@@ -98,14 +180,6 @@ def _apply_static_settings(camera, plan: dict) -> None:
     if "aperture" in plan:
         set_config(camera, "aperture", plan["aperture"])
 
-def get_config_choices(camera, name: str) -> list[str]:
-    """Returns the valid choice strings for a RADIO/MENU config node (e.g.
-    'imagequality'). These vary by camera model and even libgphoto2
-    version, so discover them from the actual connected camera rather than
-    hardcoding a guess — see throughput_test.py --list-image-quality."""
-    cfg = camera.get_config()
-    node = cfg.get_child_by_name(name)
-    return list(node.get_choices())
 
 def run_burst(camera, plan: dict, fps: float | None = None) -> int:
     """diamond_ring_burst-style plan: fixed exposure, max fps, for

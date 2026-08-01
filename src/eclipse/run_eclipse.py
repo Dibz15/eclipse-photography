@@ -86,7 +86,11 @@ def build_schedule(cfg: dict):
 def run(cfg: dict, dry_run: bool) -> None:
     schedule, fps = build_schedule(cfg)
     tz = resolve_tz(cfg.get("timezone"))
-    camera = connect(cfg.get("camera", {}).get("port"), dry_run=dry_run)
+    camera = connect(
+        cfg.get("camera", {}).get("port"),
+        dry_run=dry_run,
+        capture_target=cfg.get("camera", {}).get("capture_target"),
+    )
 
     for start_time, end_time, label, plan in schedule:
         now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)

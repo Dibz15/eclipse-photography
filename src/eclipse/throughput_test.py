@@ -20,9 +20,9 @@ downloading live (safer against card failure, slower).
 Usage:
     uv run eclipse-throughput                       # test every quality choice
     uv run eclipse-throughput --list-image-quality   # just print your camera's
-                                                      # choices and exit -- use one
-                                                      # of these in config.yaml's
-                                                      # camera.image_quality
+                                                      # imagequality choices and exit
+    uv run eclipse-throughput --list-capture-target  # just print your camera's
+                                                      # capturetarget choices and exit
     uv run eclipse-throughput --write                # also save the fastest
                                                       # no-download result into
                                                       # config.yaml as measured_max_fps
@@ -100,22 +100,41 @@ def main():
         "use one of these in config.yaml's camera.image_quality",
     )
     parser.add_argument(
+        "--list-capture-target",
+        action="store_true",
+        help="print your camera's exact capturetarget choice strings and exit — "
+        "use one of these in config.yaml's camera.capture_target if "
+        "auto-detection ever picks the wrong one",
+    )
+    parser.add_argument(
         "--write",
         action="store_true",
         help="write the fastest no-download fps into config.yaml as camera.measured_max_fps",
     )
     args = parser.parse_args()
 
-    camera = connect(args.port)
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
 
-    if args.list_image_quality:
-        choices = get_config_choices(camera, "imagequality")
-        print("Your camera's imagequality choices:")
-        for c in choices:
-            flag = "" if is_real_choice(c) else "  (placeholder — not usable, see docstring)"
-            print(f"  {c!r}{flag}")
+    # --list-* is diagnostic — it needs to work even when the automatic
+    # capturetarget enforcement below would fail, since that's often
+    # exactly what you're trying to debug.
+    if args.list_image_quality or args.list_capture_target:
+        camera = connect(args.port, enforce_capture_target=False)
+        if args.list_image_quality:
+            choices = get_config_choices(camera, "imagequality")
+            print("Your camera's imagequality choices:")
+            for c in choices:
+                flag = "" if is_real_choice(c) else "  (placeholder — not usable, see docstring)"
+                print(f"  {c!r}{flag}")
+        if args.list_capture_target:
+            choices = get_config_choices(camera, "capturetarget")
+            print("Your camera's capturetarget choices:")
+            for c in choices:
+                print(f"  {c!r}")
         return
 
+    camera = connect(args.port, capture_target=cfg.get("camera", {}).get("capture_target"))
     results = run(camera, n=args.n)
 
     print("\nSummary (fps):")
@@ -126,8 +145,6 @@ def main():
         nodownload = {k: v for k, v in results.items() if k.endswith("_nodownload")}
         best_key = max(nodownload, key=nodownload.get)
         best_fps = nodownload[best_key]
-        with open(args.config) as f:
-            cfg = yaml.safe_load(f)
         cfg["camera"]["measured_max_fps"] = round(best_fps, 2)
         with open(args.config, "w") as f:
             yaml.safe_dump(cfg, f, sort_keys=False)

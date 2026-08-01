@@ -36,6 +36,13 @@ Usage:
         default 25s between groups of captures.
     uv run eclipse-throughput --trigger-test --warmup-captures 3  # test whether
         a few ordinary captures first eliminate trigger-test's slow first call.
+    uv run eclipse-throughput --bracket-test                      # test
+        trigger_capture_one() across totality_bracket's REAL varying-shutter-
+        speed sequence (not diamond_ring_burst's single fixed exposure) --
+        this is the verification needed before totality_bracket itself could
+        move off plain capture_one(). See time_trigger_bracket() below.
+    uv run eclipse-throughput --bracket-test --bracket-margin 5    # more
+        margin per shot if slower speeds don't confirm in time.
 
 trigger_capture() is a different, lower-level operation than the plain
 capture() the rest of this script uses: it just fires the shutter and
@@ -81,7 +88,15 @@ from pathlib import Path
 
 import yaml
 
-from .camera import capture_one, connect, get_config_choices, set_config, trigger_capture_one
+from . import bracket_plans
+from .camera import (
+    capture_one,
+    connect,
+    get_config_choices,
+    set_config,
+    shutter_speed_seconds,
+    trigger_capture_one,
+)
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
@@ -106,6 +121,7 @@ def warm_up(camera, n: int) -> None:
     that ordinary captures elsewhere in a real schedule would already
     absorb before diamond_ring_burst ever runs. See the module
     docstring."""
+    set_config(camera, "shutterspeed", "1/500")
     for _ in range(n):
         capture_one(camera)
 
@@ -149,6 +165,42 @@ def time_trigger_captures(camera, n: int, pause: float, event_timeout: float = 2
             time.sleep(pause)
     elapsed = time.time() - start
     return elapsed, confirmed
+
+
+def time_trigger_bracket(
+    camera, shutter_speeds: list[str], margin: float
+) -> list[tuple[str, float, bool]]:
+    """Times a set_config(shutterspeed) + trigger_capture_one() cycle
+    across a SEQUENCE of different shutter speeds — mirroring
+    run_bracket_once()'s actual pattern (used by totality_bracket and the
+    partial-phase brackets), unlike time_trigger_captures() above, which
+    only exercises a single fixed exposure repeated (diamond_ring_burst's
+    pattern). Neither the set_config()-between-shots interleaving nor
+    slow (multi-second) exposures were covered by the testing that
+    validated trigger_capture_one() for diamond_ring_burst — this is
+    that missing verification.
+
+    event_timeout for each shot is shutter_speed_seconds(speed) + margin
+    — a fixed short timeout appropriate for diamond_ring_burst's
+    near-instant 1/4000 exposure would incorrectly read a slow, working
+    multi-second exposure as a failure, since the shutter has to stay
+    open for the full exposure time before FILE_ADDED can possibly fire.
+    `margin` is a starting guess (steady-state overhead measured at
+    ~1.2s for FAST exposures in earlier testing; whether that same
+    overhead holds for slow exposures is exactly what this is checking).
+
+    Returns a list of (shutter_speed, elapsed_seconds, confirmed) per
+    shot, in the order given, so you can see exactly which speeds (if
+    any) need more margin."""
+    results = []
+    for speed in shutter_speeds:
+        set_config(camera, "shutterspeed", speed)
+        timeout = shutter_speed_seconds(speed) + margin
+        start = time.time()
+        confirmed = trigger_capture_one(camera, event_timeout=timeout)
+        elapsed = time.time() - start
+        results.append((speed, elapsed, confirmed))
+    return results
 
 
 def run(camera, n: int = 20) -> dict[str, float]:
@@ -227,6 +279,21 @@ def main():
         "-- checks whether that eliminates trigger_capture()'s first-call "
         "delay, see module docstring",
     )
+    parser.add_argument(
+        "--bracket-test",
+        action="store_true",
+        help="test trigger_capture_one() across the REAL totality_bracket "
+        "shutter speed sequence (varying speeds via set_config between "
+        "shots, including multi-second exposures) -- see module docstring "
+        "and time_trigger_bracket()",
+    )
+    parser.add_argument(
+        "--bracket-margin",
+        type=float,
+        default=3.0,
+        help="seconds of margin added to each shot's own exposure time for "
+        "--bracket-test's per-shot event_timeout (default: 3)",
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -272,6 +339,22 @@ def main():
                 "--trigger-event-timeout if your camera's write-buffer pause "
                 "is longer than that."
             )
+        return
+
+    if args.bracket_test:
+        speeds = bracket_plans.totality_bracket["shutter_speeds"]
+        results = time_trigger_bracket(camera, speeds, args.bracket_margin)
+        print(f"{'shutter speed':>15}  {'elapsed':>10}  confirmed")
+        for speed, elapsed, confirmed in results:
+            print(f"{speed:>15}  {elapsed:>9.2f}s  {'yes' if confirmed else 'NO'}")
+        failures = [speed for speed, _, confirmed in results if not confirmed]
+        if failures:
+            print(
+                f"\n{len(failures)} speed(s) didn't confirm within their allotted "
+                f"time: {failures} — try a longer --bracket-margin for those."
+            )
+        else:
+            print("\nAll shutter speeds confirmed.")
         return
 
     results = run(camera, n=args.n)

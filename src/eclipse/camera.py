@@ -122,6 +122,20 @@ def pick_card_choice(choices: list[str]) -> str | None:
     return next((c for c in choices if "card" in c.lower()), None)
 
 
+def shutter_speed_seconds(shutter_speed: str) -> float:
+    """Converts a shutter speed string in bracket_plans.py's format
+    ('1/2000', '4', etc.) into seconds. Used to size
+    trigger_capture_one()'s event_timeout per-shot: a 4-second exposure
+    needs the shutter to stay physically open for the full 4 seconds
+    before FILE_ADDED can possibly fire, so a fixed short timeout tuned
+    for diamond_ring_burst's near-instant 1/4000 exposure would
+    incorrectly read a slow, working shot as a failure."""
+    if "/" in shutter_speed:
+        numerator, denominator = shutter_speed.split("/")
+        return float(numerator) / float(denominator)
+    return float(shutter_speed)
+
+
 def _force_capture_target_to_card(camera, override: str | None = None) -> None:
     """Every bracket plan in this project assumes captures survive on the
     card without being downloaded during the event. Many camera/driver

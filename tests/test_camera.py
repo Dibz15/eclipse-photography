@@ -7,6 +7,7 @@ from eclipse.camera import (
     DryRunCamera,
     _force_capture_target_to_card,
     pick_card_choice,
+    shutter_speed_seconds,
     trigger_capture_one,
 )
 
@@ -18,6 +19,18 @@ def test_pick_card_choice_matches_case_insensitively():
 
 def test_pick_card_choice_returns_none_when_no_card_option():
     assert pick_card_choice(["Internal RAM", "SDRAM"]) is None
+
+
+def test_shutter_speed_seconds_fractional():
+    assert shutter_speed_seconds("1/2000") == pytest.approx(0.0005)
+    assert shutter_speed_seconds("1/500") == pytest.approx(0.002)
+    assert shutter_speed_seconds("1/4") == pytest.approx(0.25)
+
+
+def test_shutter_speed_seconds_whole_seconds():
+    assert shutter_speed_seconds("1") == pytest.approx(1.0)
+    assert shutter_speed_seconds("2") == pytest.approx(2.0)
+    assert shutter_speed_seconds("4") == pytest.approx(4.0)
 
 
 # --------------------------------------------------------------------------

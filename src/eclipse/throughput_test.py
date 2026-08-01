@@ -34,6 +34,8 @@ Usage:
     uv run eclipse-throughput --trigger-test --trigger-event-timeout 30  # if
         your camera pauses with sustained write activity for longer than the
         default 25s between groups of captures.
+    uv run eclipse-throughput --trigger-test --warmup-captures 3  # test whether
+        a few ordinary captures first eliminate trigger-test's slow first call.
 
 trigger_capture() is a different, lower-level operation than the plain
 capture() the rest of this script uses: it just fires the shutter and
@@ -51,10 +53,24 @@ specifically FILE_ADDED (property-change notifications fire constantly
 around every capture), so each trigger polls repeatedly until FILE_ADDED
 shows up or --trigger-event-timeout elapses -- a single check isn't
 enough and will undercount real captures your camera is actually
-completing. If your camera pauses with sustained write activity every
-few frames (buffer-full behavior), --trigger-event-timeout needs to
-comfortably exceed that pause, not just the gap between individual
-frames.
+completing.
+
+On first use, --trigger-test may show a long delay (tens of seconds)
+before the FIRST confirmed capture, then fast confirmations after that.
+Testing ruled out both the obvious explanations: rebooting the camera
+didn't change it (not a camera-side write-buffer thing), and bare
+`gphoto2 --trigger-capture` from the CLI is always instant, even cold
+(not a capture-triggering cost at all). The remaining explanation:
+opening a PTP session appears to emit a burst of initial "here's my
+current state" property-change events (seen directly in manual CLI
+testing -- expprogram, continousshootingcount, ExposureRemaining, etc.),
+and only a caller that's actually polling wait_for_event() has to churn
+through that backlog before reaching the real FILE_ADDED. That would
+make it a one-time cost per SESSION, not per capture or per idle period
+-- use --warmup-captures to test this: a few ordinary capture_one()
+calls before the real measurement, mirroring what a real schedule
+already does (ordinary captures throughout the partial phase) long
+before diamond_ring_burst's own 15-second window ever starts.
 """
 
 from __future__ import annotations
@@ -79,6 +95,19 @@ def is_real_choice(choice: str) -> bool:
     body yet (a known, documented libgphoto2 limitation — see the module
     docstring). These aren't meaningfully settable, so they're excluded."""
     return not choice.startswith(_PLACEHOLDER_PREFIX)
+
+
+def warm_up(camera, n: int) -> None:
+    """Fires n plain capture_one() calls, discarding results, before the
+    real measurement starts. Diagnostic for whether an initial event-sync
+    delay -- seen on the first trigger_capture()+wait_for_event() call in
+    a fresh session, but never with bare --trigger-capture alone, and not
+    cleared by rebooting the camera -- is a one-time per-SESSION cost
+    that ordinary captures elsewhere in a real schedule would already
+    absorb before diamond_ring_burst ever runs. See the module
+    docstring."""
+    for _ in range(n):
+        capture_one(camera)
 
 
 def time_captures(camera, n: int, download: bool) -> float:
@@ -207,6 +236,14 @@ def main():
         help="max seconds to wait for each trigger's FILE_ADDED event before "
         "giving up on it, in --trigger-test (default: 25)",
     )
+    parser.add_argument(
+        "--warmup-captures",
+        type=int,
+        default=0,
+        help="fire N plain capture_one() calls before the real test (any mode) "
+        "-- checks whether that eliminates trigger_capture()'s first-call "
+        "delay, see module docstring",
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -231,6 +268,10 @@ def main():
         return
 
     camera = connect(args.port, capture_target=cfg.get("camera", {}).get("capture_target"))
+
+    if args.warmup_captures:
+        print(f"Warming up with {args.warmup_captures} plain capture(s)...")
+        warm_up(camera, args.warmup_captures)
 
     if args.trigger_test:
         elapsed, confirmed = time_trigger_captures(

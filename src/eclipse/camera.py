@@ -37,7 +37,12 @@ class _DryRunConfig:
 
 class DryRunCamera:
     """Stand-in for a real gphoto2.Camera. Logs instead of touching
-    hardware."""
+    hardware, and sleeps briefly per capture to simulate realistic PTP
+    round-trip latency. Without this, a burst plan with no configured fps
+    (e.g. measured_max_fps still null) would spin as fast as Python can
+    loop for the full duration_seconds window — hundreds of thousands of
+    "captures" in 15 seconds — since nothing here naturally throttles it
+    the way a real camera's blocking capture() call would."""
 
     def get_config(self):
         return _DryRunConfig()
@@ -47,6 +52,7 @@ class DryRunCamera:
 
     def capture(self, *_args, **_kwargs):
         log.info("[dry-run] capture()")
+        time.sleep(0.2)  # ~5fps, roughly matching real D5200 throughput
 
 
 # --------------------------------------------------------------------------

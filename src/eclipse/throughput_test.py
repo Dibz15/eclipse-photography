@@ -26,6 +26,35 @@ Usage:
     uv run eclipse-throughput --write                # also save the fastest
                                                       # no-download result into
                                                       # config.yaml as measured_max_fps
+    uv run eclipse-throughput --trigger-test                       # test
+        trigger_capture()+wait_for_event() instead of the normal capture()-
+        based sweep -- see below.
+    uv run eclipse-throughput --trigger-test --trigger-pause 0.3   # with a
+        pause between triggers.
+    uv run eclipse-throughput --trigger-test --trigger-event-timeout 30  # if
+        your camera pauses with sustained write activity for longer than the
+        default 25s between groups of captures.
+
+trigger_capture() is a different, lower-level operation than the plain
+capture() the rest of this script uses: it just fires the shutter and
+returns immediately, versus capture()'s full trigger-wait-resolve cycle
+(gphoto2's own docs and multiple independent reports describe capture()
+as internally retrieving the object during that resolve step regardless
+of whether your own code calls file_get() afterward -- which would
+explain why --download shows little difference from no-download in the
+main sweep above). --trigger-test measures trigger_capture() paired with
+wait_for_event() to confirm (not download) each resulting FILE_ADDED
+event, within this one persistent session -- avoiding the reconnection
+overhead a shell loop of separate `gphoto2` CLI calls would pay per
+iteration. wait_for_event() returns on the FIRST event of ANY type, not
+specifically FILE_ADDED (property-change notifications fire constantly
+around every capture), so each trigger polls repeatedly until FILE_ADDED
+shows up or --trigger-event-timeout elapses -- a single check isn't
+enough and will undercount real captures your camera is actually
+completing. If your camera pauses with sustained write activity every
+few frames (buffer-full behavior), --trigger-event-timeout needs to
+comfortably exceed that pause, not just the gap between individual
+frames.
 """
 
 from __future__ import annotations
@@ -64,6 +93,52 @@ def time_captures(camera, n: int, download: bool) -> float:
     return time.time() - start
 
 
+def time_trigger_captures(camera, n: int, pause: float, event_timeout: float = 25.0) -> tuple[float, int]:
+    """Times n trigger_capture() + wait_for_event() cycles within this one
+    persistent session.
+
+    wait_for_event() returns on the FIRST event that arrives, of ANY
+    type -- per gphoto2's own docs, *eventtype is only set to
+    GP_EVENT_TIMEOUT if NOTHING arrives within that call's timeout.
+    Checking it once per trigger isn't enough: this camera fires plenty
+    of unrelated property-change events around every capture (seen
+    directly in manual CLI testing -- expprogram, continousshootingcount,
+    ExposureRemaining, etc.), any of which can arrive before the
+    FILE_ADDED we're actually after. So each trigger polls
+    wait_for_event() repeatedly, discarding everything except
+    FILE_ADDED, until either that shows up or `event_timeout` seconds
+    have passed with no relevant event at all — matching the pattern in
+    libgphoto2's own trigger-capture examples. `pause` adds a further
+    sleep between triggers on top of that.
+
+    Caveat: if the camera has several captures queued up (e.g. right
+    after a busy/writing period) and confirms them in a burst, a
+    FILE_ADDED seen here isn't guaranteed to belong to the trigger that
+    "caused" it in strict 1:1 order — good enough for a throughput read,
+    not a rigorous per-frame audit.
+
+    Returns (elapsed_seconds, frames_confirmed)."""
+    import gphoto2 as gp
+
+    start = time.time()
+    confirmed = 0
+    for _ in range(n):
+        camera.trigger_capture()
+        trigger_start = time.time()
+        found = False
+        while time.time() - trigger_start < event_timeout:
+            event_type, _event_data = camera.wait_for_event(3000)  # ms, per poll
+            if event_type == gp.GP_EVENT_FILE_ADDED:
+                found = True
+                break
+        if found:
+            confirmed += 1
+        if pause:
+            time.sleep(pause)
+    elapsed = time.time() - start
+    return elapsed, confirmed
+
+
 def run(camera, n: int = 20) -> dict[str, float]:
     choices = [c for c in get_config_choices(camera, "imagequality") if is_real_choice(c)]
     if not choices:
@@ -89,7 +164,9 @@ def run(camera, n: int = 20) -> dict[str, float]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--port", default=None)
     parser.add_argument("--n", type=int, default=20)
     parser.add_argument("--config", default=str(CONFIG_PATH))
@@ -110,6 +187,25 @@ def main():
         "--write",
         action="store_true",
         help="write the fastest no-download fps into config.yaml as camera.measured_max_fps",
+    )
+    parser.add_argument(
+        "--trigger-test",
+        action="store_true",
+        help="test trigger_capture()+wait_for_event() throughput instead of "
+        "the normal capture()-based sweep — see the module docstring",
+    )
+    parser.add_argument(
+        "--trigger-pause",
+        type=float,
+        default=0.0,
+        help="seconds to sleep between trigger_capture() calls in --trigger-test (default: 0)",
+    )
+    parser.add_argument(
+        "--trigger-event-timeout",
+        type=float,
+        default=25.0,
+        help="max seconds to wait for each trigger's FILE_ADDED event before "
+        "giving up on it, in --trigger-test (default: 25)",
     )
     args = parser.parse_args()
 
@@ -135,6 +231,25 @@ def main():
         return
 
     camera = connect(args.port, capture_target=cfg.get("camera", {}).get("capture_target"))
+
+    if args.trigger_test:
+        elapsed, confirmed = time_trigger_captures(
+            camera, args.n, args.trigger_pause, args.trigger_event_timeout
+        )
+        fps = confirmed / elapsed if elapsed else 0.0
+        print(
+            f"{confirmed}/{args.n} confirmed in {elapsed:.2f}s "
+            f"(pause={args.trigger_pause}s) -> {fps:.2f} fps (confirmed frames only)"
+        )
+        if confirmed < args.n:
+            print(
+                f"\n{args.n - confirmed} trigger(s) never saw a FILE_ADDED event "
+                f"within {args.trigger_event_timeout:.0f}s — try a longer "
+                "--trigger-event-timeout if your camera's write-buffer pause "
+                "is longer than that."
+            )
+        return
+
     results = run(camera, n=args.n)
 
     print("\nSummary (fps):")

@@ -29,6 +29,7 @@ eclipse-timings = "eclipse.timings:main"
 eclipse-throughput = "eclipse.throughput_test:main"
 eclipse-run = "eclipse.run_eclipse:main"
 eclipse-focus-check = "eclipse.focus_check:main"
+eclipse-rehearse = "eclipse.rehearse:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -41,10 +42,11 @@ packages = ["src/eclipse"]
 line-length = 100
 
 [tool.ruff.lint]
-# DTZ: run_eclipse.py deliberately works in naive datetimes that represent
+# DTZ: this project deliberately works in naive datetimes that represent
 # UTC throughout (matching config.yaml's plain "HH:MM:SS" timings_utc
-# fields) rather than mixing in timezone-aware objects — see .clinerules.
-extend-ignore = ["DTZ007", "DTZ005", "DTZ003"]
+# fields, and rehearse.py's synthetic equivalent) rather than mixing in
+# timezone-aware objects — see .clinerules.
+extend-ignore = ["DTZ001", "DTZ007", "DTZ005", "DTZ003"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -20,8 +20,25 @@ camera:
                           # to see your camera's real choices, then paste one
                           # here. Leave null to not touch it (inherits whatever
                           # is already set on the camera).
+  capture_target: null    # normally auto-detected (whichever capturetarget
+                          # choice contains "card") and enforced automatically
+                          # at connect time -- unlike image_quality, there's no
+                          # legitimate reason this project would want Internal
+                          # RAM. Only set this if auto-detection picks the wrong
+                          # choice on your camera; run
+                          # `uv run eclipse-throughput --list-capture-target`
+                          # to see the raw choices.
 
 output_dir: "./eclipse_frames"
+
+# Filled in by `uv run eclipse-focus-check --calibrate` -- see that
+# script's docstring. Thresholds are relative to your specific lens/
+# aperture/ROI, not universal; recalibrate if you change any of those.
+#
+# focus_check:
+#   low_threshold: 45.2
+#   high_threshold: 210.8
+#   roi: null   # [x, y, width, height], or null for whole-frame
 
 # Filled in by `uv run eclipse-timings --write`, after you've cross-checked
 # the numbers against EclipseWise or the USNO calculator for your exact

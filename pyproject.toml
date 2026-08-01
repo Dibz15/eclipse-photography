@@ -9,6 +9,8 @@ dependencies = [
     "pyyaml>=6.0",
     "scipy>=1.11",
     "tzdata>=2024.1",  # ensures zoneinfo has an IANA db on every platform
+    "numpy>=1.26",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +28,7 @@ dev = [
 eclipse-timings = "eclipse.timings:main"
 eclipse-throughput = "eclipse.throughput_test:main"
 eclipse-run = "eclipse.run_eclipse:main"
+eclipse-focus-check = "eclipse.focus_check:main"
 
 [build-system]
 requires = ["hatchling"]

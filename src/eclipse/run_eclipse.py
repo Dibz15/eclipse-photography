@@ -131,7 +131,7 @@ def _run_startup_focus_check(camera, cfg: dict, dry_run: bool) -> None:
 
 
 def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
-    schedule, fps = build_schedule(cfg)
+    schedule, _fps = build_schedule(cfg)
     tz = resolve_tz(cfg.get("timezone"))
     camera = connect(
         cfg.get("camera", {}).get("port"),
@@ -171,7 +171,7 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
 
         log.info("Firing %s%s", label, suffix)
         try:
-            run_sequence(camera, plan, end_time=end_time, fps=fps)
+            run_sequence(camera, plan, end_time=end_time)
         except Exception:
             log.exception("Error during %s — continuing to next event", label)
 

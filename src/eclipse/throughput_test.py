@@ -81,7 +81,7 @@ from pathlib import Path
 
 import yaml
 
-from .camera import capture_one, connect, get_config_choices, set_config
+from .camera import capture_one, connect, get_config_choices, set_config, trigger_capture_one
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
@@ -124,21 +124,14 @@ def time_captures(camera, n: int, download: bool) -> float:
 
 def time_trigger_captures(camera, n: int, pause: float, event_timeout: float = 25.0) -> tuple[float, int]:
     """Times n trigger_capture() + wait_for_event() cycles within this one
-    persistent session.
+    persistent session, using the same trigger_capture_one() that
+    run_burst() uses in production (see camera.py) — this diagnostic and
+    the real capture path always exercise the identical mechanism.
 
-    wait_for_event() returns on the FIRST event that arrives, of ANY
-    type -- per gphoto2's own docs, *eventtype is only set to
-    GP_EVENT_TIMEOUT if NOTHING arrives within that call's timeout.
-    Checking it once per trigger isn't enough: this camera fires plenty
-    of unrelated property-change events around every capture (seen
-    directly in manual CLI testing -- expprogram, continousshootingcount,
-    ExposureRemaining, etc.), any of which can arrive before the
-    FILE_ADDED we're actually after. So each trigger polls
-    wait_for_event() repeatedly, discarding everything except
-    FILE_ADDED, until either that shows up or `event_timeout` seconds
-    have passed with no relevant event at all — matching the pattern in
-    libgphoto2's own trigger-capture examples. `pause` adds a further
-    sleep between triggers on top of that.
+    `event_timeout` here defaults much longer than trigger_capture_one()'s
+    own production default (5s), specifically to accommodate the cold-
+    start session-handshake delay this function exists to measure — see
+    trigger_capture_one()'s docstring and --warmup-captures below.
 
     Caveat: if the camera has several captures queued up (e.g. right
     after a busy/writing period) and confirms them in a burst, a
@@ -147,20 +140,10 @@ def time_trigger_captures(camera, n: int, pause: float, event_timeout: float = 2
     not a rigorous per-frame audit.
 
     Returns (elapsed_seconds, frames_confirmed)."""
-    import gphoto2 as gp
-
     start = time.time()
     confirmed = 0
     for _ in range(n):
-        camera.trigger_capture()
-        trigger_start = time.time()
-        found = False
-        while time.time() - trigger_start < event_timeout:
-            event_type, _event_data = camera.wait_for_event(3000)  # ms, per poll
-            if event_type == gp.GP_EVENT_FILE_ADDED:
-                found = True
-                break
-        if found:
+        if trigger_capture_one(camera, event_timeout=event_timeout):
             confirmed += 1
         if pause:
             time.sleep(pause)

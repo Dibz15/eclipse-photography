@@ -54,6 +54,13 @@ class DryRunCamera:
         log.info("[dry-run] capture()")
         time.sleep(0.2)  # ~5fps, roughly matching real D5200 throughput
 
+    def trigger_capture(self):
+        log.info("[dry-run] trigger_capture()")
+        time.sleep(0.2)
+
+    def wait_for_event(self, timeout_ms):
+        log.info("[dry-run] wait_for_event(%d)", timeout_ms)
+
 
 # --------------------------------------------------------------------------
 # Real camera
@@ -171,6 +178,7 @@ def _force_capture_target_to_card(camera, override: str | None = None) -> None:
         )
     log.info("capturetarget confirmed set to %r", card_choice)
 
+
 def capture_one(camera):
     if isinstance(camera, DryRunCamera):
         return camera.capture()
@@ -180,6 +188,56 @@ def capture_one(camera):
     return camera.capture(gp.GP_CAPTURE_IMAGE)
 
 
+def trigger_capture_one(camera, event_timeout: float = 5.0) -> bool:
+    """Fires trigger_capture() and confirms it via wait_for_event(),
+    rather than the full trigger-wait-resolve cycle plain capture()
+    does internally (gphoto2's own docs, and multiple independent
+    reports, describe capture() as retrieving the object's data as a
+    side effect of that resolve step regardless of whether the caller
+    ever calls file_get() -- which is why it's meaningfully slower).
+    Confirmed directly on this project's camera: ~0.82fps sustained via
+    this mechanism vs. ~0.5fps for plain capture() at the same image
+    quality, with zero dropped frames once warmed up (see below).
+
+    wait_for_event() returns on the FIRST event of ANY type, not
+    specifically FILE_ADDED — this camera fires plenty of unrelated
+    property-change notifications around every capture — so a single
+    call isn't enough; this polls until FILE_ADDED shows up or
+    event_timeout seconds pass with nothing relevant arriving.
+
+    The first trigger_capture()+wait_for_event() cycle in a freshly
+    connected session can take tens of seconds (confirmed: not a
+    camera-side write-buffer thing, since it wasn't cleared by
+    rebooting the camera, and not a shutter-triggering cost, since bare
+    trigger_capture() alone is instant even cold) — most likely a
+    one-time PTP session handshake, where opening a session emits an
+    initial burst of state-sync events. That cost is naturally absorbed
+    by whichever capture happens first after connect() — every bracket
+    plan in this project fires ordinary capture_one() calls well before
+    diamond_ring_burst's own tight window, so event_timeout's default
+    here reflects steady-state operation, not that cold-start case (see
+    throughput_test.py's --trigger-test for testing the cold-start
+    scenario directly, which uses a longer default for that reason).
+
+    Returns True if a FILE_ADDED event was confirmed, False if the
+    timeout elapsed without one — doesn't raise, since one missed frame
+    in a burst shouldn't abort the rest of it."""
+    if isinstance(camera, DryRunCamera):
+        camera.trigger_capture()
+        camera.wait_for_event(int(event_timeout * 1000))
+        return True
+
+    import gphoto2 as gp
+
+    camera.trigger_capture()
+    trigger_start = time.monotonic()
+    while time.monotonic() - trigger_start < event_timeout:
+        event_type, _event_data = camera.wait_for_event(3000)  # ms, per poll
+        if event_type == gp.GP_EVENT_FILE_ADDED:
+            return True
+    return False
+
+
 def _apply_static_settings(camera, plan: dict) -> None:
     if "iso" in plan:
         set_config(camera, "iso", str(plan["iso"]))
@@ -187,22 +245,31 @@ def _apply_static_settings(camera, plan: dict) -> None:
         set_config(camera, "aperture", plan["aperture"])
 
 
-def run_burst(camera, plan: dict, fps: float | None = None) -> int:
-    """diamond_ring_burst-style plan: fixed exposure, max fps, for
-    plan['duration_seconds']. Returns the number of frames captured."""
+def run_burst(camera, plan: dict) -> int:
+    """diamond_ring_burst-style plan: fixed exposure, for
+    plan['duration_seconds']. Uses trigger_capture_one() rather than
+    capture_one() — confirmed meaningfully faster for this fixed-exposure
+    pattern (see trigger_capture_one's docstring). No fps-based pacing
+    here: trigger_capture_one() is already self-pacing via its own
+    blocking wait_for_event() confirmation, so an additional sleep based
+    on measured_max_fps (measured against the older, slower plain
+    capture() mechanism) would just throttle this faster path back down
+    toward the old rate.
+
+    Returns the number of CONFIRMED frames captured — may be less than
+    the number of trigger attempts if any went unconfirmed."""
     _apply_static_settings(camera, plan)
     set_config(camera, "shutterspeed", plan["shutter_speed"])
 
-    delay = 1.0 / fps if fps else 0.0
     end = time.monotonic() + plan["duration_seconds"]
-    n = 0
+    attempted = 0
+    confirmed = 0
     while time.monotonic() < end:
-        capture_one(camera)
-        n += 1
-        if delay:
-            time.sleep(delay)
-    log.info("Burst complete: %d frames", n)
-    return n
+        attempted += 1
+        if trigger_capture_one(camera):
+            confirmed += 1
+    log.info("Burst complete: %d/%d confirmed", confirmed, attempted)
+    return confirmed
 
 
 def run_bracket_once(camera, plan: dict) -> None:
@@ -212,7 +279,7 @@ def run_bracket_once(camera, plan: dict) -> None:
         capture_one(camera)
 
 
-def run_sequence(camera, plan: dict, end_time: dt.datetime | None = None, fps: float | None = None):
+def run_sequence(camera, plan: dict, end_time: dt.datetime | None = None):
     """Dispatches on the plan's shape (see bracket_plans.py):
 
     - mode == "burst_single_exposure": fixed-exposure burst for
@@ -223,7 +290,7 @@ def run_sequence(camera, plan: dict, end_time: dt.datetime | None = None, fps: f
       bracket back-to-back with no pause, until end_time (or once).
     """
     if plan.get("mode") == "burst_single_exposure":
-        run_burst(camera, plan, fps=fps)
+        run_burst(camera, plan)
         return
 
     if "interval_seconds" in plan:

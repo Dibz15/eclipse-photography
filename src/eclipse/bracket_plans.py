@@ -48,8 +48,12 @@ deep_crescent_bracket = {
 # Diamond ring / Baily's beads: happens in the ~5-15 seconds immediately
 # before C2 and immediately after C3. FILTER COMES OFF right at C2 (or just
 # before, per your own safety procedure) and back ON right after C3.
-# Bright, fast-changing — burst as fast as your measured fps allows, fixed
-# exposure (no bracket) so you don't waste frames on wrong settings.
+# Bright, fast-changing — burst as fast as possible, fixed exposure (no
+# bracket) so you don't waste frames on wrong settings. Fires via
+# trigger_capture_one() (see camera.py), not plain capture_one() —
+# confirmed on this project's camera at ~0.82fps sustained once warmed up
+# (vs. ~0.5fps for plain capture() at the same NEF+Fine quality), so this
+# 15-second window gets roughly 12 frames rather than 6-7.
 #
 # Shutter speed is the D5200's ceiling and matches Espenak's Baily's Beads
 # (Q=12) value at f/11/ISO100 almost exactly — deliberately NOT biased
@@ -57,10 +61,10 @@ deep_crescent_bracket = {
 # highlight protection on the bead matters more than any one frame's
 # corona visibility: the surrounding corona/chromosphere (only 1-3 stops
 # fainter) can be recovered by stacking multiple burst frames in post,
-# without any frame clipping the bead itself. Shoot RAW for this burst if
-# you want that recovery headroom — check the RAW-fps tradeoff with
-# `eclipse-throughput` first, since imageformat isn't currently enforced
-# by camera.py (inherits whatever the camera was last set to).
+# without any frame clipping the bead itself. With ~12 frames now
+# realistically achievable (see above), RAW is worth it here for that
+# stacking headroom — set camera.image_quality in config.yaml to your
+# camera's NEF/RAW choice (see `eclipse-throughput --list-image-quality`).
 diamond_ring_burst = {
     "trigger_offset_seconds": -8,  # start burst 8s before predicted C2
     "duration_seconds": 15,  # run through the actual contact moment

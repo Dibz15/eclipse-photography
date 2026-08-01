@@ -1,6 +1,14 @@
+import sys
+import types
+
 import pytest
 
-from eclipse.camera import _force_capture_target_to_card, pick_card_choice
+from eclipse.camera import (
+    DryRunCamera,
+    _force_capture_target_to_card,
+    pick_card_choice,
+    trigger_capture_one,
+)
 
 
 def test_pick_card_choice_matches_case_insensitively():
@@ -89,3 +97,64 @@ def test_force_capture_target_raises_when_camera_does_not_apply_the_change():
     camera = FakeCamera(node)
     with pytest.raises(RuntimeError, match="still reports"):
         _force_capture_target_to_card(camera)
+
+
+# --------------------------------------------------------------------------
+# trigger_capture_one(): the fake camera's wait_for_event() returns from a
+# pre-programmed sequence of (event_type, event_data) tuples, simulating
+# the real camera's mix of irrelevant property-change events and an
+# eventual FILE_ADDED (or none, to test the give-up path). A minimal fake
+# `gphoto2` module is installed in sys.modules so the function's lazy
+# `import gphoto2 as gp` resolves without the real package installed.
+# --------------------------------------------------------------------------
+
+class _FakeEventCamera:
+    def __init__(self, events):
+        self._events = list(events)
+        self.trigger_count = 0
+
+    def trigger_capture(self):
+        self.trigger_count += 1
+
+    def wait_for_event(self, timeout_ms):
+        if self._events:
+            return self._events.pop(0)
+        return ("nothing_left", None)
+
+
+@pytest.fixture
+def fake_gphoto2_module(monkeypatch):
+    fake_gp = types.ModuleType("gphoto2")
+    fake_gp.GP_EVENT_FILE_ADDED = "file_added"
+    monkeypatch.setitem(sys.modules, "gphoto2", fake_gp)
+    return fake_gp
+
+
+def test_trigger_capture_one_confirms_on_file_added(fake_gphoto2_module):
+    camera = _FakeEventCamera([(fake_gphoto2_module.GP_EVENT_FILE_ADDED, "somefile")])
+    assert trigger_capture_one(camera, event_timeout=1.0) is True
+    assert camera.trigger_count == 1
+
+
+def test_trigger_capture_one_skips_irrelevant_events_before_file_added(fake_gphoto2_module):
+    # Several unrelated events before the real one -- exactly the pattern
+    # that made the original (buggy) single-check version undercount real
+    # captures the camera was actually completing.
+    camera = _FakeEventCamera(
+        [
+            ("expprogram_changed", None),
+            ("liveviewprohibit_changed", None),
+            ("continousshootingcount_changed", None),
+            (fake_gphoto2_module.GP_EVENT_FILE_ADDED, "somefile"),
+        ]
+    )
+    assert trigger_capture_one(camera, event_timeout=1.0) is True
+
+
+def test_trigger_capture_one_gives_up_after_event_timeout(fake_gphoto2_module):
+    camera = _FakeEventCamera([("expprogram_changed", None)])  # never a real FILE_ADDED
+    assert trigger_capture_one(camera, event_timeout=0.05) is False
+
+
+def test_trigger_capture_one_dry_run_always_confirms():
+    assert trigger_capture_one(DryRunCamera()) is True

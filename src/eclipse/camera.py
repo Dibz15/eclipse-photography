@@ -286,11 +286,35 @@ def run_burst(camera, plan: dict) -> int:
     return confirmed
 
 
-def run_bracket_once(camera, plan: dict) -> None:
+def run_bracket_once(camera, plan: dict, margin: float = 3.0) -> tuple[int, int]:
+    """Fires one pass through plan['shutter_speeds'], one shot per speed.
+    Uses trigger_capture_one() rather than plain capture_one() — verified
+    via `eclipse-throughput --bracket-test` across the real
+    totality_bracket sequence (varying speeds via set_config between
+    shots, up through a 4-second exposure), not just diamond_ring_burst's
+    single fixed exposure.
+
+    event_timeout per shot is shutter_speed_seconds(speed) + margin: the
+    shutter has to stay open for the full exposure time before
+    FILE_ADDED can possibly fire, so a fixed short timeout tuned for a
+    near-instant exposure would incorrectly read a slow, working
+    multi-second shot as a failure. margin=3.0 default matches what
+    --bracket-test confirmed: steady-state overhead measured at
+    ~1.1-1.35s across all 14 real totality_bracket speeds, consistent
+    regardless of exposure length (not scaling with exposure time, as
+    initially suspected it might).
+
+    Returns (confirmed, attempted)."""
     _apply_static_settings(camera, plan)
+    attempted = 0
+    confirmed = 0
     for speed in plan["shutter_speeds"]:
         set_config(camera, "shutterspeed", speed)
-        capture_one(camera)
+        attempted += 1
+        timeout = shutter_speed_seconds(speed) + margin
+        if trigger_capture_one(camera, event_timeout=timeout):
+            confirmed += 1
+    return confirmed, attempted
 
 
 def run_sequence(camera, plan: dict, end_time: dt.datetime | None = None):
@@ -309,13 +333,15 @@ def run_sequence(camera, plan: dict, end_time: dt.datetime | None = None):
 
     if "interval_seconds" in plan:
         while True:
-            run_bracket_once(camera, plan)
+            confirmed, attempted = run_bracket_once(camera, plan)
+            log.info("Bracket pass: %d/%d confirmed", confirmed, attempted)
             if end_time is None or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) >= end_time:
                 break
             time.sleep(plan["interval_seconds"])
         return
 
     while True:
-        run_bracket_once(camera, plan)
+        confirmed, attempted = run_bracket_once(camera, plan)
+        log.info("Bracket pass: %d/%d confirmed", confirmed, attempted)
         if end_time is None or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) >= end_time:
             break

@@ -9,13 +9,13 @@ rather than guessed — they vary by camera model and even libgphoto2
 version (there are open libgphoto2 bug reports about exactly this for
 several Nikon bodies), so don't hardcode one from a forum post.
 
-For a D5200 over USB 2.0, a JPEG-only quality with no download is
-typically your ceiling; a RAW/NEF quality with download is meaningfully
-slower and may cap you around 1-2 fps rather than the ~5 fps the camera
-claims mechanically, since gphoto2's PTP round-trip is the bottleneck, not
-the shutter. Decide now whether you're leaving files on the card during
-totality (fast, retrieve later with scripts/pull_from_card.py) or
-downloading live (safer against card failure, slower).
+This sweep uses plain capture_one() and is purely informational now —
+none of run_eclipse.py's actual capture path (run_burst()/
+run_bracket_once()) depends on measured fps anymore; both are self-pacing
+via trigger_capture_one(). Use this to compare image qualities against
+each other (JPEG vs. NEF, download vs. not) and pick camera.image_quality
+in config.yaml accordingly — see --trigger-test and --bracket-test below
+for what the real capture path actually measures.
 
 Usage:
     uv run eclipse-throughput                       # test every quality choice
@@ -23,9 +23,6 @@ Usage:
                                                       # imagequality choices and exit
     uv run eclipse-throughput --list-capture-target  # just print your camera's
                                                       # capturetarget choices and exit
-    uv run eclipse-throughput --write                # also save the fastest
-                                                      # no-download result into
-                                                      # config.yaml as measured_max_fps
     uv run eclipse-throughput --trigger-test                       # test
         trigger_capture()+wait_for_event() instead of the normal capture()-
         based sweep -- see below.
@@ -39,10 +36,15 @@ Usage:
     uv run eclipse-throughput --bracket-test                      # test
         trigger_capture_one() across totality_bracket's REAL varying-shutter-
         speed sequence (not diamond_ring_burst's single fixed exposure) --
-        this is the verification needed before totality_bracket itself could
-        move off plain capture_one(). See time_trigger_bracket() below.
+        this is the verification that validated moving totality_bracket off
+        plain capture_one() (see bracket_plans.trim_to_fit's overhead
+        default, set directly from this test's results). Re-run this if you
+        change lens, card, or camera. See time_trigger_bracket() below.
     uv run eclipse-throughput --bracket-test --bracket-margin 5    # more
         margin per shot if slower speeds don't confirm in time.
+    uv run eclipse-throughput --bracket-test --write               # also save
+        the suggested camera.bracket_overhead into config.yaml -- see
+        suggest_overhead() and bracket_plans.trim_to_fit().
 
 trigger_capture() is a different, lower-level operation than the plain
 capture() the rest of this script uses: it just fires the shutter and
@@ -203,6 +205,25 @@ def time_trigger_bracket(
     return results
 
 
+def suggest_overhead(
+    results: list[tuple[str, float, bool]], safety_margin: float = 0.2
+) -> float | None:
+    """Given time_trigger_bracket()'s results, suggests a
+    bracket_plans.trim_to_fit() overhead value: the largest observed
+    (elapsed - exposure_time) across CONFIRMED shots, plus a small safety
+    margin on top of the single test run's own worst case. Unconfirmed
+    shots are excluded — their elapsed time reflects giving up at the
+    timeout, not a real completion time, so it isn't a meaningful
+    overhead reading. Returns None if nothing confirmed, since there's
+    nothing to base a suggestion on."""
+    observed = [
+        elapsed - shutter_speed_seconds(speed) for speed, elapsed, confirmed in results if confirmed
+    ]
+    if not observed:
+        return None
+    return round(max(observed) + safety_margin, 2)
+
+
 def run(camera, n: int = 20) -> dict[str, float]:
     choices = [c for c in get_config_choices(camera, "imagequality") if is_real_choice(c)]
     if not choices:
@@ -248,11 +269,6 @@ def main():
         "auto-detection ever picks the wrong one",
     )
     parser.add_argument(
-        "--write",
-        action="store_true",
-        help="write the fastest no-download fps into config.yaml as camera.measured_max_fps",
-    )
-    parser.add_argument(
         "--trigger-test",
         action="store_true",
         help="test trigger_capture()+wait_for_event() throughput instead of "
@@ -293,6 +309,12 @@ def main():
         default=3.0,
         help="seconds of margin added to each shot's own exposure time for "
         "--bracket-test's per-shot event_timeout (default: 3)",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="with --bracket-test: write the suggested camera.bracket_overhead "
+        "into config.yaml (see suggest_overhead())",
     )
     args = parser.parse_args()
 
@@ -355,6 +377,20 @@ def main():
             )
         else:
             print("\nAll shutter speeds confirmed.")
+
+        overhead = suggest_overhead(results)
+        if overhead is None:
+            print(
+                "\nNo confirmed shots to base a camera.bracket_overhead "
+                "suggestion on."
+            )
+        else:
+            print(f"\nSuggested camera.bracket_overhead: {overhead}")
+            if args.write:
+                cfg.setdefault("camera", {})["bracket_overhead"] = overhead
+                with open(args.config, "w") as f:
+                    yaml.safe_dump(cfg, f, sort_keys=False)
+                print(f"Wrote bracket_overhead = {overhead} into {args.config}")
         return
 
     results = run(camera, n=args.n)
@@ -362,15 +398,6 @@ def main():
     print("\nSummary (fps):")
     for k, v in results.items():
         print(f"  {k:>30}: {v:.2f}")
-
-    if args.write:
-        nodownload = {k: v for k, v in results.items() if k.endswith("_nodownload")}
-        best_key = max(nodownload, key=nodownload.get)
-        best_fps = nodownload[best_key]
-        cfg["camera"]["measured_max_fps"] = round(best_fps, 2)
-        with open(args.config, "w") as f:
-            yaml.safe_dump(cfg, f, sort_keys=False)
-        print(f"\nWrote measured_max_fps = {best_fps:.2f} (from {best_key!r}) into {args.config}")
 
 
 if __name__ == "__main__":

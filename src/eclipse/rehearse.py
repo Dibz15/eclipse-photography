@@ -9,10 +9,10 @@ This deliberately does NOT duplicate any scheduling logic. It only
 synthesizes C1-C4 timestamps and feeds them into the unmodified
 build_schedule()/run(), so a rehearsal exercises the exact same code path
 as the real event — including deep-crescent window clamping, diamond-ring
-offsets, and trim_to_fit() against your real measured_max_fps. Everything
-else (camera.port, image_quality, capture_target, measured_max_fps,
-focus_check thresholds, timezone) is read from your real config.yaml as
-normal; config.yaml itself is never touched or written.
+offsets, and trim_to_fit()'s per-shutter-speed time estimate for
+totality_bracket. Everything else (camera.port, image_quality,
+capture_target, focus_check thresholds, timezone) is read from your real
+config.yaml as normal; config.yaml itself is never touched or written.
 
 Note on --partial-seconds: DEEP_CRESCENT_LEAD (see run_eclipse.py) is a
 fixed 3-minute constant, not something this tool overrides — testing the
@@ -38,8 +38,7 @@ or --totality-seconds — that's not scaled either.
 Usage:
     uv run eclipse-rehearse                          # real camera, ~110s total (default settings)
     uv run eclipse-rehearse --dry-run                 # simulated camera
-    uv run eclipse-rehearse --totality-seconds 90      # see how your real
-                                                        # measured_max_fps
+    uv run eclipse-rehearse --totality-seconds 90      # see how trim_to_fit
                                                         # trims the bracket
                                                         # for a longer totality
     uv run eclipse-rehearse --partial-seconds 400 --totality-seconds 60

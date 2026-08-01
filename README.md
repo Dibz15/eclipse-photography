@@ -66,14 +66,28 @@ you're measuring throughput, not exposure quality):
 uv run eclipse-throughput --list-image-quality
 uv run eclipse-throughput --list-capture-target
 
-uv run eclipse-throughput --write
+uv run eclipse-throughput
 ```
 
 This tests every real image-quality choice your camera reports (JPEG
-variants, NEF/RAW, RAW+JPEG combos) and writes the fastest no-download fps
-into `config.yaml` as `camera.measured_max_fps`. `run_eclipse.py` uses it
-to auto-trim `totality_bracket` if your confirmed totality duration is too
-short to fit all 14 stops (see `bracket_plans.trim_to_fit`).
+variants, NEF/RAW, RAW+JPEG combos), with and without downloading each
+frame — useful for comparing formats when deciding `camera.image_quality`
+below, but otherwise informational: the actual capture path
+(`run_burst()`/`run_bracket_once()`) doesn't depend on a measured fps
+figure at all — both are self-pacing via `trigger_capture_one()`.
+
+```bash
+uv run eclipse-throughput --bracket-test
+```
+
+This is the one that matters for `totality_bracket` specifically: it
+fires the real 14-step shutter-speed sequence via `trigger_capture_one()`
+and confirms every speed lands in time, including the multi-second
+exposures. `bracket_plans.trim_to_fit()` uses the resulting per-shot
+timing (exposure time + a fixed overhead, not a flat fps) to decide how
+much of the bracket fits in a short totality — see `--bracket-margin` if
+any speed doesn't confirm. Re-run this if you change lens, card, or
+camera; the overhead figure it validates is specific to your setup.
 
 If you want a specific format locked in rather than whatever the camera
 happens to be set to, put the exact string from `--list-image-quality`

@@ -37,12 +37,12 @@ class _DryRunConfig:
 
 class DryRunCamera:
     """Stand-in for a real gphoto2.Camera. Logs instead of touching
-    hardware, and sleeps briefly per capture to simulate realistic PTP
-    round-trip latency. Without this, a burst plan with no configured fps
-    (e.g. measured_max_fps still null) would spin as fast as Python can
-    loop for the full duration_seconds window — hundreds of thousands of
-    "captures" in 15 seconds — since nothing here naturally throttles it
-    the way a real camera's blocking capture() call would."""
+    hardware, and sleeps briefly per capture/trigger to simulate
+    realistic PTP round-trip latency. Without this, run_burst()'s
+    duration-bounded loop would spin as fast as Python can loop for the
+    full duration_seconds window — hundreds of thousands of "captures" in
+    15 seconds — since nothing here naturally throttles it the way a real
+    camera's blocking capture()/trigger_capture() call would."""
 
     def get_config(self):
         return _DryRunConfig()

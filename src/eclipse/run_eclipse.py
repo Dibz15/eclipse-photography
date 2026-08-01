@@ -54,17 +54,15 @@ def _local_suffix(utc_naive: dt.datetime, tz) -> str:
 
 
 def build_schedule(cfg: dict):
-    """Returns (schedule, fps) where schedule is a list of
-    (start_time, end_time, label, plan) tuples in chronological order."""
+    """Returns a list of (start_time, end_time, label, plan) tuples in
+    chronological order."""
     t = cfg["timings_utc"]
     date_str = cfg["date"]
     c1, c2, c3, c4 = (to_dt(date_str, t[k]) for k in ("C1", "C2", "C3", "C4"))
-    fps = cfg.get("camera", {}).get("measured_max_fps")
 
     totality_seconds = (c3 - c2).total_seconds()
-    totality_plan = (
-        bp.trim_to_fit(bp.totality_bracket, totality_seconds, fps) if fps else bp.totality_bracket
-    )
+    overhead = cfg.get("camera", {}).get("bracket_overhead")
+    totality_plan = bp.trim_to_fit(bp.totality_bracket, totality_seconds, overhead)
 
     diamond_in_start = c2 - dt.timedelta(seconds=8)
     diamond_out_start = c3 - dt.timedelta(seconds=8)
@@ -84,7 +82,7 @@ def build_schedule(cfg: dict):
         (diamond_out_end, deep_crescent_post_end, "deep_crescent_post_totality", bp.deep_crescent_bracket),
         (deep_crescent_post_end, c4, "partial_post_totality", bp.partial_phase_bracket),
     ]
-    return schedule, fps
+    return schedule
 
 
 def _run_startup_focus_check(camera, cfg: dict, dry_run: bool) -> None:
@@ -131,7 +129,7 @@ def _run_startup_focus_check(camera, cfg: dict, dry_run: bool) -> None:
 
 
 def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
-    schedule, _fps = build_schedule(cfg)
+    schedule = build_schedule(cfg)
     tz = resolve_tz(cfg.get("timezone"))
     camera = connect(
         cfg.get("camera", {}).get("port"),

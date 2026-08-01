@@ -13,7 +13,6 @@ timezone: "America/Denver"
 
 camera:
   port: null             # optional, e.g. "usb:001,005" — leave null to auto-detect
-  measured_max_fps: null # filled in by `uv run eclipse-throughput --write`
   image_quality: null    # e.g. "NEF (Raw)", "JPEG Fine" -- exact strings are
                           # camera/driver-specific. Run
                           # `uv run eclipse-throughput --list-image-quality`
@@ -28,6 +27,13 @@ camera:
                           # choice on your camera; run
                           # `uv run eclipse-throughput --list-capture-target`
                           # to see the raw choices.
+  bracket_overhead: null  # per-shot processing/confirmation overhead (seconds)
+                          # trim_to_fit() adds to each kept shutter speed's own
+                          # exposure time, to estimate whether totality_bracket
+                          # fits a short totality. Built-in default (1.3s) was
+                          # measured on one specific camera/card/cable -- run
+                          # `uv run eclipse-throughput --bracket-test --write`
+                          # to calibrate this against your actual gear instead.
 
 output_dir: "./eclipse_frames"
 

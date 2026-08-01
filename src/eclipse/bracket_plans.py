@@ -20,6 +20,8 @@ confirm against your actual filter's rated density.
 
 from __future__ import annotations
 
+from .camera import shutter_speed_seconds
+
 # Partial phases (C1->C2 and C3->C4): SOLAR FILTER ON.
 # Slow cadence is fine — the sun's disk brightness barely changes minute to
 # minute, EXCEPT in the final few minutes before/after totality — see
@@ -92,27 +94,64 @@ totality_bracket = {
 }
 
 
-def trim_to_fit(bracket_plan: dict, totality_seconds: float, measured_max_fps: float) -> dict:
-    """If the full bracket won't complete once within totality_seconds at
-    measured_max_fps, keep the outer (fastest/slowest) stops plus as many
-    evenly-spaced middle stops as will fit, rather than run out of time
-    mid-loop. Returns a new dict; never mutates the input.
+def _select_indices(n_total: int, k: int) -> list[int]:
+    """Evenly-spaced indices spanning a sequence of length n_total,
+    always including both endpoints once k >= 2 — the fastest/slowest
+    stops are the ones worth keeping most. May return fewer than k
+    indices if rounding collisions occur for a given n_total/k
+    combination; that only means slightly less total time than budgeted
+    for, never more."""
+    if k >= n_total:
+        return list(range(n_total))
+    if k < 2:
+        return [0]
+    return sorted({round(i * (n_total - 1) / (k - 1)) for i in range(k)})
+
+
+def trim_to_fit(bracket_plan: dict, totality_seconds: float, overhead: float | None = None) -> dict:
+    """If the full bracket won't complete once within totality_seconds,
+    keep the outer (fastest/slowest) stops plus as many evenly-spaced
+    middle stops as will fit, rather than run out of time mid-loop.
+    Returns a new dict; never mutates the input.
 
         totality_seconds = C3 - C2   (known once you're at your site)
-        frames_possible = totality_seconds * measured_max_fps
-    """
-    speeds = bracket_plan["shutter_speeds"]
-    frames_possible = int(totality_seconds * measured_max_fps)
 
-    if frames_possible >= len(speeds):
+    Each kept step's estimated real time is shutter_speed_seconds(speed)
+    + overhead — the shutter has to stay open for the full exposure time
+    (from a fraction of a second up to totality_bracket's own 4-second
+    stop), plus per-shot processing/confirmation overhead via
+    trigger_capture_one(). overhead=None uses the built-in default
+    (1.3s) — set from `eclipse-throughput --bracket-test` results against
+    this project's original camera: ~1.1-1.35s across all 14 real
+    totality_bracket speeds, consistent regardless of exposure length.
+    That's specific to one camera/card/cable combination, though —
+    config.yaml's camera.bracket_overhead (filled in by
+    `--bracket-test --write`) overrides this with a value measured
+    against your actual gear; run_eclipse.py passes that through when
+    set.
+
+    This replaced an earlier flat-fps estimate (frames_possible =
+    totality_seconds * measured_max_fps), which assumed every step took
+    the same time — not true once the bracket spans 1/2000 to 4 real
+    seconds; the slow end costs far more per shot than the fast end.
+    """
+    if overhead is None:
+        overhead = 1.3
+
+    speeds = bracket_plan["shutter_speeds"]
+    n = len(speeds)
+
+    def total_seconds_for(k: int) -> float:
+        return sum(shutter_speed_seconds(speeds[i]) + overhead for i in _select_indices(n, k))
+
+    if total_seconds_for(n) <= totality_seconds:
         return bracket_plan
 
-    if frames_possible < 2:
-        trimmed = [speeds[0]]
-    else:
-        idx = sorted(
-            {round(i * (len(speeds) - 1) / (frames_possible - 1)) for i in range(frames_possible)}
-        )
-        trimmed = [speeds[i] for i in idx]
+    for k in range(n - 1, 0, -1):
+        if total_seconds_for(k) <= totality_seconds:
+            trimmed = [speeds[i] for i in _select_indices(n, k)]
+            return {**bracket_plan, "shutter_speeds": trimmed}
 
-    return {**bracket_plan, "shutter_speeds": trimmed}
+    # Even the single fastest shot doesn't fit — take it anyway rather
+    # than return an empty bracket.
+    return {**bracket_plan, "shutter_speeds": [speeds[0]]}

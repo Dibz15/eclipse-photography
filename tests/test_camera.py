@@ -184,3 +184,140 @@ def test_trigger_capture_one_gives_up_after_event_timeout(fake_gphoto2_module):
 
 def test_trigger_capture_one_dry_run_always_confirms():
     assert trigger_capture_one(DryRunCamera()) is True
+
+
+# --------------------------------------------------------------------------
+# Per-shot predictive cutting + palindrome. _RecordingCamera captures the
+# shutter speeds actually set, so we can assert on the real firing order
+# and on which shots got skipped for time.
+# --------------------------------------------------------------------------
+
+class _RecordingCamera:
+    def __init__(self):
+        self.speeds_set = []
+        self._nodes = {}
+
+    def get_config(self):
+        return self
+
+    def get_child_by_name(self, name):
+        self._current = name
+        return self
+
+    def set_value(self, value):
+        if self._current == "shutterspeed":
+            self.speeds_set.append(value)
+
+    def get_value(self):
+        return None
+
+    def set_config(self, cfg):
+        pass
+
+
+def test_run_bracket_once_fires_every_speed_when_no_end_time(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    camera = _RecordingCamera()
+    plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
+    confirmed, attempted, skipped = cam.run_bracket_once(camera, plan)
+    assert (confirmed, attempted, skipped) == (3, 3, 0)
+    assert camera.speeds_set == ["1/2000", "1/500", "4"]
+
+
+def test_run_bracket_once_reverse_fires_slowest_first(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    camera = _RecordingCamera()
+    plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
+    cam.run_bracket_once(camera, plan, reverse=True)
+    assert camera.speeds_set == ["4", "1/500", "1/2000"]
+
+
+def test_run_bracket_once_skips_shots_that_will_not_fit(monkeypatch):
+    import datetime as _dt
+
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    camera = _RecordingCamera()
+    plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
+    # 5s left, overhead 1s: 1/2000 (~1s) and 1/500 (~1s) fit; "4" needs
+    # 4+1=5s which is not < 5s remaining... it's exactly equal, so allow
+    # a hair less to make the intent unambiguous.
+    end_time = cam._utcnow() + _dt.timedelta(seconds=4.9)
+    _confirmed, attempted, skipped = cam.run_bracket_once(
+        camera, plan, end_time=end_time, overhead=1.0
+    )
+    assert attempted == 2
+    assert skipped == 1
+    assert camera.speeds_set == ["1/2000", "1/500"]
+
+
+def test_run_bracket_once_skips_everything_when_no_time_left(monkeypatch):
+    import datetime as _dt
+
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    camera = _RecordingCamera()
+    plan = {"shutter_speeds": ["1/2000", "4"]}
+    end_time = cam._utcnow() - _dt.timedelta(seconds=1)  # already past
+    confirmed, attempted, skipped = cam.run_bracket_once(
+        camera, plan, end_time=end_time, overhead=1.0
+    )
+    assert (confirmed, attempted, skipped) == (0, 0, 2)
+    assert camera.speeds_set == []
+
+
+def test_run_sequence_palindrome_alternates_direction(monkeypatch):
+    import datetime as _dt
+
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    camera = _RecordingCamera()
+    plan = {"shutter_speeds": ["1/2000", "1/500"], "palindrome": True}
+    # Enough time for a few passes at ~0 real cost per shot.
+    end_time = cam._utcnow() + _dt.timedelta(seconds=0.5)
+    cam.run_sequence(camera, plan, end_time=end_time, overhead=0.0, timeout_margin=1.0)
+    # First pass forward, second reversed -> the two slowest exposures
+    # ("1/500") land back to back at the seam.
+    assert camera.speeds_set[:4] == ["1/2000", "1/500", "1/500", "1/2000"]
+
+
+def test_run_sequence_terminates_when_window_is_spent(monkeypatch):
+    import datetime as _dt
+
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    camera = _RecordingCamera()
+    plan = {"shutter_speeds": ["1/2000", "4"]}
+    # end_time already past: run_bracket_once fires nothing, and
+    # run_sequence must not spin forever calling it.
+    end_time = cam._utcnow() - _dt.timedelta(seconds=1)
+    cam.run_sequence(camera, plan, end_time=end_time, overhead=1.0)
+    assert camera.speeds_set == []
+
+
+def test_run_bracket_once_reversed_still_fires_faster_shots_after_a_skip(monkeypatch):
+    import datetime as _dt
+
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    camera = _RecordingCamera()
+    plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
+    # Reversed order is 4, 1/500, 1/2000. With ~3s left and overhead 1s,
+    # the 4s shot can't fit -- but the two fast ones that FOLLOW it in a
+    # reversed pass still can, and skipping them would waste the window.
+    end_time = cam._utcnow() + _dt.timedelta(seconds=3)
+    _confirmed, attempted, skipped = cam.run_bracket_once(
+        camera, plan, end_time=end_time, overhead=1.0, reverse=True
+    )
+    assert skipped == 1
+    assert attempted == 2
+    assert camera.speeds_set == ["1/500", "1/2000"]

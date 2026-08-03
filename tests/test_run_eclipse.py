@@ -2,6 +2,7 @@ import datetime as dt
 
 import pytest
 
+from eclipse import bracket_plans as bp
 from eclipse.run_eclipse import DEEP_CRESCENT_LEAD, build_schedule, run
 
 CFG = {
@@ -60,25 +61,55 @@ def test_deep_crescent_pre_totality_clamped_to_c1_when_partial_phase_is_short():
     assert pre_start == c1
 
 
+def test_totality_ends_when_diamond_ring_out_starts_not_at_c3():
+    # The bracket must stop in time for the C3 diamond ring, not run to
+    # C3 itself -- overrunning here delayed diamond_ring_out past the
+    # event entirely.
+    schedule = build_schedule(CFG)
+    windows = {label: (start, end) for start, end, label, _ in schedule}
+    _, totality_end = windows["totality"]
+    diamond_out_start, _ = windows["diamond_ring_out"]
+    assert totality_end == diamond_out_start
+
+
 def test_totality_plan_untrimmed_when_totality_is_long():
-    # C2->C3 is 2 minutes here -- comfortably more than the ~26s the full
-    # 14-step bracket actually takes (see bracket_plans.trim_to_fit), so
-    # it should come back unchanged.
+    # C2->C3 is 2 minutes here -- comfortably more than the 8-step
+    # ladder's ~24s/pass needs, so no trimming.
     schedule = build_schedule(CFG)
     totality_plan = next(plan for _, _, label, plan in schedule if label == "totality")
-    assert len(totality_plan["shutter_speeds"]) == 14
+    assert totality_plan["shutter_speeds"] == bp.totality_bracket["shutter_speeds"]
 
 
 def test_totality_plan_gets_trimmed_for_short_totality():
-    cfg = {**CFG, "timings_utc": {**CFG["timings_utc"], "C3": "18:00:15"}}  # 15s totality
+    cfg = {**CFG, "timings_utc": {**CFG["timings_utc"], "C3": "18:00:30"}}  # 30s totality
     schedule = build_schedule(cfg)
     totality_plan = next(plan for _, _, label, plan in schedule if label == "totality")
     speeds = totality_plan["shutter_speeds"]
-    assert len(speeds) < 14
-    # Still keeps both endpoints -- 15s affords the fastest and slowest
-    # stops plus several middle ones (see test_bracket_plans.py).
-    assert speeds[0] == "1/2000"
-    assert speeds[-1] == "4"
+    full = bp.totality_bracket["shutter_speeds"]
+    assert len(speeds) < len(full)
+    # Endpoints preserved -- the extremes are what the bracket exists for.
+    assert speeds[0] == full[0]
+    assert speeds[-1] == full[-1]
+
+
+def test_trim_accounts_for_diamond_ring_burst_overrun():
+    # diamond_ring_in straddles C2 and runs past it, so the bracket's real
+    # window is smaller than C3-C2. A schedule whose nominal totality
+    # looks sufficient but whose EFFECTIVE window isn't must still trim.
+    burst = bp.diamond_ring_burst
+    overrun = burst["duration_seconds"] + burst["trigger_offset_seconds"]
+    assert overrun > 0, "test assumes the burst overruns C2"
+
+    schedule = build_schedule(CFG)
+    totality_start, totality_end = next(
+        (start, end) for start, end, label, _ in schedule if label == "totality"
+    )
+    c2 = dt.datetime.strptime(f"{CFG['date']} {CFG['timings_utc']['C2']}", "%Y-%m-%d %H:%M:%S")
+    # The scheduled start is still C2 (the scheduler just runs late), but
+    # the window used for trimming accounts for the overrun.
+    assert totality_start == c2
+    effective = (totality_end - (c2 + dt.timedelta(seconds=overrun))).total_seconds()
+    assert effective < (totality_end - c2).total_seconds()
 
 
 def test_run_refuses_combo_image_quality_before_scheduling_starts():

@@ -123,7 +123,6 @@ def warm_up(camera, n: int) -> None:
     that ordinary captures elsewhere in a real schedule would already
     absorb before diamond_ring_burst ever runs. See the module
     docstring."""
-    set_config(camera, "shutterspeed", "1/500")
     for _ in range(n):
         capture_one(camera)
 
@@ -205,20 +204,47 @@ def time_trigger_bracket(
     return results
 
 
-def suggest_overhead(
-    results: list[tuple[str, float, bool]], safety_margin: float = 0.2
-) -> float | None:
-    """Given time_trigger_bracket()'s results, suggests a
-    bracket_plans.trim_to_fit() overhead value: the largest observed
-    (elapsed - exposure_time) across CONFIRMED shots, plus a small safety
-    margin on top of the single test run's own worst case. Unconfirmed
-    shots are excluded — their elapsed time reflects giving up at the
-    timeout, not a real completion time, so it isn't a meaningful
-    overhead reading. Returns None if nothing confirmed, since there's
-    nothing to base a suggestion on."""
-    observed = [
+def observed_overheads(results: list[tuple[str, float, bool]]) -> list[float]:
+    """Per-shot overhead (elapsed - exposure time) for CONFIRMED shots
+    only. Unconfirmed shots are excluded: their elapsed time reflects
+    giving up at the timeout, not a real completion, so it isn't a
+    meaningful overhead reading."""
+    return [
         elapsed - shutter_speed_seconds(speed) for speed, elapsed, confirmed in results if confirmed
     ]
+
+
+def suggest_overhead(results: list[tuple[str, float, bool]]) -> float | None:
+    """AVERAGE per-shot overhead — for config.yaml's
+    camera.bracket_overhead, which is used to ESTIMATE how long shots
+    and passes will take (bracket_plans.trim_to_fit, and
+    camera.run_bracket_once's per-shot predictive check).
+
+    Average rather than max on purpose: the max is dominated by
+    occasional catch-up shots absorbing a previous shot's write backlog,
+    and using it for whole-pass estimation overestimated a real measured
+    14-step pass by ~48% — which would trim the bracket harder than
+    necessary and skip shots that would comfortably have fit. Returns
+    None if nothing confirmed."""
+    observed = observed_overheads(results)
+    if not observed:
+        return None
+    return round(sum(observed) / len(observed), 2)
+
+
+def suggest_timeout_margin(
+    results: list[tuple[str, float, bool]], safety_margin: float = 0.5
+) -> float | None:
+    """MAX per-shot overhead plus a safety margin — for config.yaml's
+    camera.bracket_timeout_margin, which sizes each shot's
+    event_timeout in camera.trigger_capture_one().
+
+    Max rather than average on purpose, the mirror image of
+    suggest_overhead(): this value decides when to GIVE UP on a shot, so
+    it has to comfortably exceed the worst observed case. Too low and
+    slow-but-working shots get falsely recorded as failures. Returns
+    None if nothing confirmed."""
+    observed = observed_overheads(results)
     if not observed:
         return None
     return round(max(observed) + safety_margin, 2)
@@ -314,7 +340,7 @@ def main():
         "--write",
         action="store_true",
         help="with --bracket-test: write the suggested camera.bracket_overhead "
-        "into config.yaml (see suggest_overhead())",
+        "and camera.bracket_timeout_margin into config.yaml",
     )
     args = parser.parse_args()
 
@@ -379,18 +405,19 @@ def main():
             print("\nAll shutter speeds confirmed.")
 
         overhead = suggest_overhead(results)
+        timeout_margin = suggest_timeout_margin(results)
         if overhead is None:
-            print(
-                "\nNo confirmed shots to base a camera.bracket_overhead "
-                "suggestion on."
-            )
+            print("\nNo confirmed shots to base timing suggestions on.")
         else:
-            print(f"\nSuggested camera.bracket_overhead: {overhead}")
+            print(f"\nSuggested camera.bracket_overhead:       {overhead}  (average, for estimation)")
+            print(f"Suggested camera.bracket_timeout_margin: {timeout_margin}  (max+margin, for timeouts)")
             if args.write:
-                cfg.setdefault("camera", {})["bracket_overhead"] = overhead
+                cam = cfg.setdefault("camera", {})
+                cam["bracket_overhead"] = overhead
+                cam["bracket_timeout_margin"] = timeout_margin
                 with open(args.config, "w") as f:
                     yaml.safe_dump(cfg, f, sort_keys=False)
-                print(f"Wrote bracket_overhead = {overhead} into {args.config}")
+                print(f"Wrote both into {args.config}")
         return
 
     results = run(camera, n=args.n)

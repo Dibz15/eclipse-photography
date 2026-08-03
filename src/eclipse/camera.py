@@ -308,7 +308,37 @@ def run_burst(camera, plan: dict) -> int:
     return confirmed
 
 
-def run_bracket_once(camera, plan: dict, margin: float = 3.0) -> tuple[int, int]:
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+
+# Fallback per-shot overhead (seconds) for TIME ESTIMATION when
+# config.yaml's camera.bracket_overhead isn't set. This is the AVERAGE
+# overhead measured across a real 14-step pure-NEF bracket on this
+# project's camera ((total elapsed - total exposure time) / shots).
+# Deliberately the average, not the max: the max is dominated by
+# occasional catch-up shots absorbing a previous shot's backlog, and
+# using it for whole-pass estimation overestimated a real pass by ~48%.
+# Calibrate against your own gear with `eclipse-throughput --bracket-test
+# --write`.
+DEFAULT_BRACKET_OVERHEAD = 2.2
+
+# Fallback margin (seconds) added to each shot's own exposure time when
+# sizing trigger_capture_one()'s event_timeout. This one IS max-based on
+# purpose: it decides when to give up on a shot, so it must comfortably
+# exceed the worst observed case rather than the typical one, or slow
+# working shots get falsely recorded as failures.
+DEFAULT_BRACKET_TIMEOUT_MARGIN = 4.0
+
+
+def run_bracket_once(
+    camera,
+    plan: dict,
+    end_time: dt.datetime | None = None,
+    overhead: float | None = None,
+    timeout_margin: float | None = None,
+    reverse: bool = False,
+) -> tuple[int, int, int]:
     """Fires one pass through plan['shutter_speeds'], one shot per speed.
     Uses trigger_capture_one() rather than plain capture_one() — verified
     via `eclipse-throughput --bracket-test` across the real
@@ -316,54 +346,134 @@ def run_bracket_once(camera, plan: dict, margin: float = 3.0) -> tuple[int, int]
     shots, up through a 4-second exposure), not just diamond_ring_burst's
     single fixed exposure.
 
-    event_timeout per shot is shutter_speed_seconds(speed) + margin: the
-    shutter has to stay open for the full exposure time before
-    FILE_ADDED can possibly fire, so a fixed short timeout tuned for a
-    near-instant exposure would incorrectly read a slow, working
-    multi-second shot as a failure. margin=3.0 default matches what
-    --bracket-test confirmed: steady-state overhead measured at
-    ~1.1-1.35s across all 14 real totality_bracket speeds, consistent
-    regardless of exposure length (not scaling with exposure time, as
-    initially suspected it might).
+    Two distinct timing values, deliberately separate because they answer
+    different questions:
 
-    Returns (confirmed, attempted)."""
+    - `timeout_margin` sizes each shot's event_timeout as
+      shutter_speed_seconds(speed) + timeout_margin. The shutter must
+      stay open for the full exposure before FILE_ADDED can fire, so a
+      fixed short timeout tuned for a near-instant exposure would read a
+      slow but working multi-second shot as a failure. Wants a
+      worst-case (max-based) value.
+    - `overhead` estimates how long a shot will actually TAKE, to decide
+      whether it still fits before end_time. Wants a typical
+      (average-based) value; using a worst-case number here would
+      needlessly skip shots that would have fit.
+
+    If `end_time` is given, each shot is checked predictively BEFORE
+    firing: a shot is skipped (and the pass ends) if
+    now + exposure + overhead would run past end_time. This is per-shot,
+    not per-pass — a partial pass that fits several more exposures is
+    much better than either overrunning the window or idling through it.
+    For totality that end_time is the diamond_ring_out start, not C3:
+    overrunning there means missing the C3 diamond ring entirely.
+
+    `reverse` runs the ladder slowest-to-fastest, for palindrome looping
+    (see run_sequence).
+
+    Returns (confirmed, attempted, skipped)."""
+    if overhead is None:
+        overhead = DEFAULT_BRACKET_OVERHEAD
+    if timeout_margin is None:
+        timeout_margin = DEFAULT_BRACKET_TIMEOUT_MARGIN
+
     _apply_static_settings(camera, plan)
+
+    speeds = list(plan["shutter_speeds"])
+    if reverse:
+        speeds.reverse()
+
     attempted = 0
     confirmed = 0
-    for speed in plan["shutter_speeds"]:
+    skipped = 0
+    for speed in speeds:
+        exposure = shutter_speed_seconds(speed)
+        if end_time is not None:
+            remaining = (end_time - _utcnow()).total_seconds()
+            if remaining < exposure + overhead:
+                # Skip just this shot, don't abandon the rest of the pass.
+                # In a forward pass everything after is slower so they'll
+                # skip too, but a REVERSED pass runs slowest-first — its
+                # later shots are faster and may well still fit, and those
+                # frames are worth having.
+                skipped += 1
+                continue
         set_config(camera, "shutterspeed", speed)
         attempted += 1
-        timeout = shutter_speed_seconds(speed) + margin
+        timeout = exposure + timeout_margin
         if trigger_capture_one(camera, event_timeout=timeout):
             confirmed += 1
-    return confirmed, attempted
+    return confirmed, attempted, skipped
 
 
-def run_sequence(camera, plan: dict, end_time: dt.datetime | None = None):
+def run_sequence(
+    camera,
+    plan: dict,
+    end_time: dt.datetime | None = None,
+    overhead: float | None = None,
+    timeout_margin: float | None = None,
+):
     """Dispatches on the plan's shape (see bracket_plans.py):
 
     - mode == "burst_single_exposure": fixed-exposure burst for
-      plan['duration_seconds'], regardless of end_time.
+      plan['duration_seconds']. Deliberately ignores end_time — the
+      burst's whole job is to straddle the contact moment, so its
+      duration is fixed by the plan, and the schedule accounts for the
+      overrun.
     - "interval_seconds" present: run one bracket, sleep the interval,
       repeat until end_time (or once, if end_time is None).
     - anything else (e.g. "repeat_until", like totality_bracket): loop the
       bracket back-to-back with no pause, until end_time (or once).
+
+    Bracket plans with "palindrome": True alternate direction each pass
+    (forward, reverse, forward, ...). At the seam this puts the two
+    slowest exposures back to back — near-identical sky conditions and
+    minimal corona rotation between them, which is exactly what you want
+    for stacking the most delicate frames. It also halves the number of
+    full-range shutter-speed jumps between consecutive shots.
+
+    `overhead` and `timeout_margin` are passed through to
+    run_bracket_once — see its docstring for why they're separate values.
     """
     if plan.get("mode") == "burst_single_exposure":
         run_burst(camera, plan)
         return
 
-    if "interval_seconds" in plan:
-        while True:
-            confirmed, attempted = run_bracket_once(camera, plan)
-            log.info("Bracket pass: %d/%d confirmed", confirmed, attempted)
-            if end_time is None or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) >= end_time:
-                break
-            time.sleep(plan["interval_seconds"])
-        return
+    palindrome = plan.get("palindrome", False)
+    interval = plan.get("interval_seconds")
+    pass_index = 0
 
     while True:
-        confirmed, attempted = run_bracket_once(camera, plan)
-        log.info("Bracket pass: %d/%d confirmed", confirmed, attempted)
-        if end_time is None or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) >= end_time:
+        reverse = palindrome and (pass_index % 2 == 1)
+        confirmed, attempted, skipped = run_bracket_once(
+            camera,
+            plan,
+            end_time=end_time,
+            overhead=overhead,
+            timeout_margin=timeout_margin,
+            reverse=reverse,
+        )
+        pass_index += 1
+        log.info(
+            "Bracket pass %d%s: %d/%d confirmed%s",
+            pass_index,
+            " (reversed)" if reverse else "",
+            confirmed,
+            attempted,
+            f", {skipped} skipped for time" if skipped else "",
+        )
+
+        if end_time is None:
             break
+        # Nothing fit at all — the window is spent. Without this the loop
+        # would spin forever calling run_bracket_once for zero shots.
+        if attempted == 0:
+            break
+        if _utcnow() >= end_time:
+            break
+
+        if interval:
+            remaining = (end_time - _utcnow()).total_seconds()
+            if remaining <= 0:
+                break
+            time.sleep(min(interval, remaining))

@@ -20,7 +20,7 @@ confirm against your actual filter's rated density.
 
 from __future__ import annotations
 
-from .camera import shutter_speed_seconds
+from .camera import DEFAULT_BRACKET_OVERHEAD, shutter_speed_seconds
 
 # Partial phases (C1->C2 and C3->C4): SOLAR FILTER ON.
 # Slow cadence is fine — the sun's disk brightness barely changes minute to
@@ -81,20 +81,45 @@ diamond_ring_burst = {
 }
 
 # Totality (C2->C3): FILTER OFF. This is the main bracket sequence —
-# corona dynamic range is huge, so step across the full range. A clean
-# 1-stop ladder from 1/2000 (chromosphere/prominence territory, though the
-# true flash is already covered by diamond_ring_burst) down to 4s (matches
-# Espenak's Q=-3 outer-corona/streamer value at f/11 ISO200). ISO 200
-# matches Espenak's own stated personal practice (ISO 200, f/9, 1/1000s to
-# 1+s) closely.
+# corona dynamic range is huge, so step across the full range.
+#
+# 8 steps, not the full 1-stop 14-step ladder, because pass COUNT matters
+# more than step density once you're shooting RAW. Measured on this
+# project's camera (pure NEF, ~2.2s average overhead per shot), against a
+# ~77-81s effective bracket window (a 92-96s totality, minus the ~7s
+# diamond_ring_in overruns past C2 and the 8s diamond_ring_out needs
+# before C3):
+#
+#   14-step 1-stop ladder : ~38.5s/pass -> only 1 complete pass
+#   8-step  2-stop ladder : ~24.1s/pass -> 3 complete passes
+#
+# Three passes crosses a real threshold: median stacking needs >=3
+# samples per exposure level to reject outliers (satellites, aircraft,
+# cosmic rays). Two can only average. RAW's ~3 stops of recovery latitude
+# makes 2-stop spacing safe — you can reconstruct an intermediate stop
+# from its neighbours — so the density lost costs little next to the
+# redundancy gained.
+#
+# Spacing is 2 stops through the fast/middle range and 1 stop at the slow
+# end (2 -> 4), where recovery helps least: down there you're fighting
+# read noise rather than clipping, and pushing a too-short exposure just
+# amplifies noise.
+#
+# Range endpoints unchanged: 1/2000 (chromosphere/prominence territory,
+# though the true flash is covered by diamond_ring_burst) through 4s
+# (Espenak's Q=-3 outer-corona/streamer value at f/11 ISO200). ISO 200
+# matches Espenak's own stated practice (ISO 200, f/9, 1/1000s to 1+s).
 totality_bracket = {
-    "shutter_speeds": [
-        "1/2000", "1/1000", "1/500", "1/250", "1/125",
-        "1/60", "1/30", "1/15", "1/8", "1/4", "1/2", "1", "2", "4",
-    ],
+    "shutter_speeds": ["1/2000", "1/500", "1/125", "1/30", "1/8", "1/2", "2", "4"],
     "iso": 200,
     "aperture": "f/11",
     "repeat_until": "C3",  # loop the sequence back-to-back until totality ends
+    # Alternate direction each pass (forward, reverse, forward...). At the
+    # seam this puts the two 4s exposures back to back — ideal for
+    # stacking the most delicate frames, since sky conditions and corona
+    # rotation barely change between them — and halves the number of
+    # 13-stop 4s -> 1/2000 jumps. See camera.run_sequence.
+    "palindrome": True,
 }
 
 
@@ -124,15 +149,20 @@ def trim_to_fit(bracket_plan: dict, totality_seconds: float, overhead: float | N
     + overhead — the shutter has to stay open for the full exposure time
     (from a fraction of a second up to totality_bracket's own 4-second
     stop), plus per-shot processing/confirmation overhead via
-    trigger_capture_one(). overhead=None uses the built-in default
-    (1.3s) — set from `eclipse-throughput --bracket-test` results against
-    this project's original camera: ~1.1-1.35s across all 14 real
-    totality_bracket speeds, consistent regardless of exposure length.
-    That's specific to one camera/card/cable combination, though —
-    config.yaml's camera.bracket_overhead (filled in by
-    `--bracket-test --write`) overrides this with a value measured
-    against your actual gear; run_eclipse.py passes that through when
-    set.
+    trigger_capture_one(). overhead=None uses
+    camera.DEFAULT_BRACKET_OVERHEAD; config.yaml's
+    camera.bracket_overhead (filled in by `eclipse-throughput
+    --bracket-test --write`) overrides it with a value measured against
+    your actual gear, and run_eclipse.py passes that through when set.
+
+    Note this decides the bracket's COMPOSITION — which steps to keep, so
+    they stay evenly spread across the full exposure range. It's
+    complementary to camera.run_bracket_once()'s per-shot predictive
+    check, which decides at runtime how much of the FINAL pass actually
+    fits before the window closes. Without trim_to_fit the runtime check
+    alone would just truncate the tail of each pass and you'd lose the
+    slow end entirely; without the runtime check, trim_to_fit alone would
+    either overrun the window or idle through the remainder of it.
 
     This replaced an earlier flat-fps estimate (frames_possible =
     totality_seconds * measured_max_fps), which assumed every step took
@@ -140,7 +170,7 @@ def trim_to_fit(bracket_plan: dict, totality_seconds: float, overhead: float | N
     seconds; the slow end costs far more per shot than the fast end.
     """
     if overhead is None:
-        overhead = 1.3
+        overhead = DEFAULT_BRACKET_OVERHEAD
 
     speeds = bracket_plan["shutter_speeds"]
     n = len(speeds)

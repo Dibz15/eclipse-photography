@@ -60,13 +60,26 @@ def build_schedule(cfg: dict):
     date_str = cfg["date"]
     c1, c2, c3, c4 = (to_dt(date_str, t[k]) for k in ("C1", "C2", "C3", "C4"))
 
-    totality_seconds = (c3 - c2).total_seconds()
-    overhead = cfg.get("camera", {}).get("bracket_overhead")
-    totality_plan = bp.trim_to_fit(bp.totality_bracket, totality_seconds, overhead)
-
     diamond_in_start = c2 - dt.timedelta(seconds=8)
     diamond_out_start = c3 - dt.timedelta(seconds=8)
     diamond_out_end = c3 + dt.timedelta(seconds=8)
+
+    # diamond_ring_in deliberately straddles C2 (run_burst ignores
+    # end_time — the burst's job is to bracket the contact moment), so it
+    # runs past C2 by duration + offset. The totality bracket really
+    # starts then, not at C2.
+    burst_overrun = dt.timedelta(
+        seconds=bp.diamond_ring_burst["duration_seconds"]
+        + bp.diamond_ring_burst["trigger_offset_seconds"]
+    )
+    totality_start = c2 + burst_overrun
+
+    # The bracket must END when diamond_ring_out needs to START, not at
+    # C3: overrunning here delays the C3 diamond ring past the event
+    # itself, which would miss it entirely.
+    totality_seconds = (diamond_out_start - totality_start).total_seconds()
+    overhead = cfg.get("camera", {}).get("bracket_overhead")
+    totality_plan = bp.trim_to_fit(bp.totality_bracket, totality_seconds, overhead)
 
     # Clamp so short/compressed schedules (or a very short partial phase)
     # never push these before C1 or past C4.
@@ -77,7 +90,7 @@ def build_schedule(cfg: dict):
         (c1, deep_crescent_pre_start, "partial_pre_totality", bp.partial_phase_bracket),
         (deep_crescent_pre_start, diamond_in_start, "deep_crescent_pre_totality", bp.deep_crescent_bracket),
         (diamond_in_start, c2, "diamond_ring_in", bp.diamond_ring_burst),
-        (c2, c3, "totality", totality_plan),
+        (c2, diamond_out_start, "totality", totality_plan),
         (diamond_out_start, diamond_out_end, "diamond_ring_out", bp.diamond_ring_burst),
         (diamond_out_end, deep_crescent_post_end, "deep_crescent_post_totality", bp.deep_crescent_bracket),
         (deep_crescent_post_end, c4, "partial_post_totality", bp.partial_phase_bracket),
@@ -180,7 +193,13 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
 
         log.info("Firing %s%s", label, suffix)
         try:
-            run_sequence(camera, plan, end_time=end_time)
+            run_sequence(
+                camera,
+                plan,
+                end_time=end_time,
+                overhead=cfg.get("camera", {}).get("bracket_overhead"),
+                timeout_margin=cfg.get("camera", {}).get("bracket_timeout_margin"),
+            )
         except Exception:
             log.exception("Error during %s — continuing to next event", label)
 

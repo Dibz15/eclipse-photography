@@ -24,7 +24,7 @@ from pathlib import Path
 import yaml
 
 from . import bracket_plans as bp
-from .camera import connect, run_sequence, set_config
+from .camera import connect, is_raw_jpeg_combo_quality, run_sequence, set_config
 from .tzutil import resolve_tz
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
@@ -142,6 +142,17 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
 
     image_quality = cfg.get("camera", {}).get("image_quality")
     if image_quality:
+        if is_raw_jpeg_combo_quality(image_quality):
+            raise SystemExit(
+                f"config.yaml's camera.image_quality={image_quality!r} is a "
+                "RAW+JPEG combo format. Confirmed directly on this project's "
+                "camera: each capture in combo mode fires two FILE_ADDED "
+                "events, but trigger_capture_one() consumes one per call — "
+                "run_bracket_once() cycling shutter speeds can silently "
+                "confirm a shot for the wrong speed (or none at all) with no "
+                "error. Use a single-format choice instead (plain NEF/RAW or "
+                "plain JPEG) — see `eclipse-throughput --list-image-quality`."
+            )
         try:
             set_config(camera, "imagequality", image_quality)
             log.info("Set image quality to %r", image_quality)

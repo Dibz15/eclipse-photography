@@ -122,6 +122,28 @@ def pick_card_choice(choices: list[str]) -> str | None:
     return next((c for c in choices if "card" in c.lower()), None)
 
 
+def is_raw_jpeg_combo_quality(image_quality: str) -> bool:
+    """True for RAW+JPEG combo imagequality choices (e.g. 'NEF+Fine',
+    'NEF+Normal') — detected by the '+' that's consistently present in
+    these choice strings across cameras/drivers.
+
+    Confirmed directly on this project's camera: each physical capture in
+    combo mode fires TWO FILE_ADDED events (one per file), but
+    trigger_capture_one() consumes exactly one event per call and treats
+    that as "this trigger is confirmed." For run_bracket_once() cycling
+    through different shutter speeds, that mismatch means every other
+    "confirmed" shot can actually be draining a STALE event left over
+    from the previous trigger's second file — silently reporting a
+    shutter speed as captured when no new photo was taken at that speed
+    at all, with the real confirmation misattributed to a later speed
+    instead (or lost). Single-format JPEG or single-format RAW produce
+    exactly one event per capture and don't have this problem — see
+    run_eclipse.py, which refuses to proceed with a combo
+    camera.image_quality rather than risk this silently during the
+    event."""
+    return "+" in image_quality
+
+
 def shutter_speed_seconds(shutter_speed: str) -> float:
     """Converts a shutter speed string in bracket_plans.py's format
     ('1/2000', '4', etc.) into seconds. Used to size

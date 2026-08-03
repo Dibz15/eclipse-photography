@@ -6,6 +6,7 @@ import pytest
 from eclipse.camera import (
     DryRunCamera,
     _force_capture_target_to_card,
+    is_raw_jpeg_combo_quality,
     pick_card_choice,
     shutter_speed_seconds,
     trigger_capture_one,
@@ -19,6 +20,18 @@ def test_pick_card_choice_matches_case_insensitively():
 
 def test_pick_card_choice_returns_none_when_no_card_option():
     assert pick_card_choice(["Internal RAM", "SDRAM"]) is None
+
+
+def test_is_raw_jpeg_combo_quality_detects_combo_choices():
+    assert is_raw_jpeg_combo_quality("NEF+Fine")
+    assert is_raw_jpeg_combo_quality("NEF+Normal")
+    assert is_raw_jpeg_combo_quality("NEF+Basic")
+
+
+def test_is_raw_jpeg_combo_quality_false_for_single_format_choices():
+    assert not is_raw_jpeg_combo_quality("NEF (Raw)")
+    assert not is_raw_jpeg_combo_quality("JPEG Fine")
+    assert not is_raw_jpeg_combo_quality("JPEG Basic")
 
 
 def test_shutter_speed_seconds_fractional():

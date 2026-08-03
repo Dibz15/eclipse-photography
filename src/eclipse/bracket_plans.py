@@ -53,9 +53,9 @@ deep_crescent_bracket = {
 # Bright, fast-changing — burst as fast as possible, fixed exposure (no
 # bracket) so you don't waste frames on wrong settings. Fires via
 # trigger_capture_one() (see camera.py), not plain capture_one() —
-# confirmed on this project's camera at ~0.82fps sustained once warmed up
-# (vs. ~0.5fps for plain capture() at the same NEF+Fine quality), so this
-# 15-second window gets roughly 12 frames rather than 6-7.
+# confirmed on this project's camera at ~0.51fps sustained (single-format
+# NEF) once warmed up, vs. ~0.4-0.5fps for plain capture() at the same
+# quality — so this 15-second window gets roughly 7-8 frames.
 #
 # Shutter speed is the D5200's ceiling and matches Espenak's Baily's Beads
 # (Q=12) value at f/11/ISO100 almost exactly — deliberately NOT biased
@@ -63,10 +63,14 @@ deep_crescent_bracket = {
 # highlight protection on the bead matters more than any one frame's
 # corona visibility: the surrounding corona/chromosphere (only 1-3 stops
 # fainter) can be recovered by stacking multiple burst frames in post,
-# without any frame clipping the bead itself. With ~12 frames now
-# realistically achievable (see above), RAW is worth it here for that
-# stacking headroom — set camera.image_quality in config.yaml to your
-# camera's NEF/RAW choice (see `eclipse-throughput --list-image-quality`).
+# without any frame clipping the bead itself. RAW is worth it here for
+# that stacking headroom — set camera.image_quality in config.yaml to your
+# camera's PLAIN NEF/RAW choice (see `eclipse-throughput
+# --list-image-quality`) -- NOT a "+JPEG"/"+Fine"/"+Normal" combo choice:
+# run_eclipse.py refuses those outright, since each capture in combo mode
+# fires two FILE_ADDED events and trigger_capture_one() can silently
+# confirm the wrong shutter speed as a result (confirmed directly on this
+# project's camera — see camera.is_raw_jpeg_combo_quality).
 diamond_ring_burst = {
     "trigger_offset_seconds": -8,  # start burst 8s before predicted C2
     "duration_seconds": 15,  # run through the actual contact moment

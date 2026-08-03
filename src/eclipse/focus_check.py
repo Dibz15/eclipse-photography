@@ -52,7 +52,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
-from .camera import capture_one, connect, get_config_choices, set_config
+from .camera import capture_one, connect, get_config_choices, is_raw_jpeg_combo_quality, set_config
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
@@ -107,13 +107,16 @@ def classify_score(score: float, low_threshold: float, high_threshold: float) ->
 
 def pick_jpeg_choice(choices: list[str]) -> str | None:
     """Case-insensitive match for a JPEG-only quality choice (excludes
-    RAW+JPEG combo choices, which have historically been fragile about
-    which filename capture_one() ends up returning). Focus-checking
-    doesn't need RAW: JPEG downloads much faster and is plenty for a
-    sharpness read. Doesn't touch config.yaml's intended eclipse-day
-    image_quality — run_eclipse.py re-applies that from config at its own
-    startup regardless of what this leaves the camera set to."""
-    return next((c for c in choices if "jpeg" in c.lower() and "+" not in c), None)
+    RAW+JPEG combo choices — see camera.is_raw_jpeg_combo_quality for why
+    those are unsafe with this project's trigger-based capture mechanism,
+    not just historically fragile). Focus-checking doesn't need RAW:
+    JPEG downloads much faster and is plenty for a sharpness read.
+    Doesn't touch config.yaml's intended eclipse-day image_quality —
+    run_eclipse.py re-applies that from config at its own startup
+    regardless of what this leaves the camera set to."""
+    return next(
+        (c for c in choices if "jpeg" in c.lower() and not is_raw_jpeg_combo_quality(c)), None
+    )
 
 
 VERDICT_LABELS = {

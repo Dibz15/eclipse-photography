@@ -24,6 +24,9 @@ Usage:
         shot, then an in-focus one, and saves thresholds (and the --roi
         used, if any) into config.yaml's focus_check block.
 
+    uv run eclipse-focus-check --calibrate --focused-img focused.jpg --unfocused-img unfocused.jpg
+        Calibrate using existing images from disk instead of live captures.
+
     uv run eclipse-focus-check
         Single capture + score + verdict, using the calibrated thresholds
         from config.yaml (or explicit --low-threshold/--high-threshold).
@@ -91,6 +94,15 @@ def laplacian_variance(gray: np.ndarray) -> float:
     return float(lap.var())
 
 
+def calculate_thresholds(out_score: float, in_score: float) -> tuple[float, float] | None:
+    """Calculate calibration thresholds from out-of-focus and in-focus scores.
+    Returns (low_threshold, high_threshold) or None if scores are inverted."""
+    if in_score <= out_score:
+        return None
+    margin = (in_score - out_score) * 0.2
+    return out_score + margin, in_score - margin
+
+
 def classify_score(score: float, low_threshold: float, high_threshold: float) -> str:
     """Three-way verdict rather than a single cutoff, since a metric this
     simple shouldn't claim more confidence than it has:
@@ -129,6 +141,14 @@ VERDICT_LABELS = {
 # --------------------------------------------------------------------------
 # Hardware-touching functions
 # --------------------------------------------------------------------------
+
+def score_image_from_path(path: Path, roi: tuple[int, int, int, int] | None) -> float:
+    """Score sharpness from an existing image file on disk."""
+    image = np.asarray(Image.open(path))
+    gray = to_grayscale(image)
+    gray = crop_roi(gray, roi)
+    return laplacian_variance(gray)
+
 
 def capture_and_download(camera, out_dir: Path) -> Path:
     """Captures a full-resolution frame and downloads it to out_dir,
@@ -209,6 +229,8 @@ def main():
     parser.add_argument("--low-threshold", type=float, default=None)
     parser.add_argument("--high-threshold", type=float, default=None)
     parser.add_argument("--calibrate", action="store_true")
+    parser.add_argument("--focused-img", default=None, help="Path to a focused reference image (for --calibrate)")
+    parser.add_argument("--unfocused-img", default=None, help="Path to an out-of-focus reference image (for --calibrate)")
     parser.add_argument("--watch", action="store_true", help="repeat the check every --interval seconds")
     parser.add_argument("--interval", type=float, default=5.0)
     args = parser.parse_args()
@@ -225,13 +247,51 @@ def main():
     else:
         roi = None
 
-    camera = connect(args.port, capture_target=cfg.get("camera", {}).get("capture_target"))
+    # Determine if we need a camera or can work entirely from disk
+    needs_camera = not (args.calibrate and args.focused_img and args.unfocused_img)
+
+    if needs_camera:
+        camera = connect(args.port, capture_target=cfg.get("camera", {}).get("capture_target"))
+    else:
+        camera = None  # type: ignore[assignment]
 
     if args.calibrate:
-        result = run_calibration(camera, out_dir, roi)
-        if result is None:
-            return
-        low_threshold, high_threshold = result
+        # File-based calibration from disk images
+        if args.focused_img and args.unfocused_img:
+            focused_path = Path(args.focused_img)
+            unfocused_path = Path(args.unfocused_img)
+
+            if not focused_path.exists():
+                print(f"Error: focused image not found: {focused_path}")
+                return
+            if not unfocused_path.exists():
+                print(f"Error: unfocused image not found: {unfocused_path}")
+                return
+
+            focused_score = score_image_from_path(focused_path, roi)
+            unfocused_score = score_image_from_path(unfocused_path, roi)
+
+            print(f"Unfocused reference score: {unfocused_score:.1f}  ({unfocused_path})")
+            print(f"In-focus reference score:  {focused_score:.1f}  ({focused_path})")
+
+            result = calculate_thresholds(unfocused_score, focused_score)
+            if result is None:
+                print(
+                    "\nWarning: the 'in-focus' shot scored lower than the "
+                    "'out-of-focus' one -- something's off (maybe focus wasn't "
+                    "actually better, or the ROI doesn't contain enough edge "
+                    "content to distinguish them). Not saving thresholds; try again."
+                )
+                return
+
+            low_threshold, high_threshold = result
+        else:
+            # Original live-capture calibration workflow
+            result = run_calibration(camera, out_dir, roi)  # type: ignore[arg-type]
+            if result is None:
+                return
+            low_threshold, high_threshold = result
+
         print(f"\nSuggested thresholds: low={low_threshold:.1f}  high={high_threshold:.1f}")
         cfg.setdefault("focus_check", {})
         cfg["focus_check"]["low_threshold"] = round(low_threshold, 1)
@@ -257,7 +317,10 @@ def main():
         )
 
     while True:
-        path, score = run_single_check(camera, out_dir, roi)
+        if args.focused_img and args.unfocused_img:
+            print("Error: use --calibrate with --focused-img/--unfocused-img, not live checks")
+            return
+        path, score = run_single_check(camera, out_dir, roi)  # type: ignore[arg-type]
         line = f"score={score:.1f}  {path}"
         if low_threshold is not None and high_threshold is not None:
             verdict = classify_score(score, low_threshold, high_threshold)

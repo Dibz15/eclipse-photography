@@ -233,6 +233,7 @@ def main():
     parser.add_argument("--unfocused-img", default=None, help="Path to an out-of-focus reference image (for --calibrate)")
     parser.add_argument("--watch", action="store_true", help="repeat the check every --interval seconds")
     parser.add_argument("--interval", type=float, default=5.0)
+    parser.add_argument("--write", action="store_true", help="Write calculated calibration to config.")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -297,9 +298,12 @@ def main():
         cfg["focus_check"]["low_threshold"] = round(low_threshold, 1)
         cfg["focus_check"]["high_threshold"] = round(high_threshold, 1)
         cfg["focus_check"]["roi"] = list(roi) if roi else None
-        with open(args.config, "w") as f:
-            yaml.safe_dump(cfg, f, sort_keys=False)
-        print(f"Saved thresholds (and ROI) into {args.config}")
+        if args.write:
+            with open(args.config, "w") as f:
+                yaml.safe_dump(cfg, f, sort_keys=False)
+            print(f"Saved thresholds (and ROI) into {args.config}")
+        else:
+            print(f"Calibration calculated but not written. Re-run with --write to write to {args.config}")
         return
 
     low_threshold = args.low_threshold

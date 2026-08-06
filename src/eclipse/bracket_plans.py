@@ -57,7 +57,7 @@ deep_crescent_bracket = {
 # NEF) once warmed up, vs. ~0.4-0.5fps for plain capture() at the same
 # quality — so this 15-second window gets roughly 7-8 frames.
 #
-# Shutter speed is the D5200's ceiling and matches Espenak's Baily's Beads
+# Shutter speed is the D5500's ceiling and matches Espenak's Baily's Beads
 # (Q=12) value at f/11/ISO100 almost exactly — deliberately NOT biased
 # brighter the way a single exposure would be. Because this is a burst,
 # highlight protection on the bead matters more than any one frame's
@@ -72,9 +72,9 @@ deep_crescent_bracket = {
 # confirm the wrong shutter speed as a result (confirmed directly on this
 # project's camera — see camera.is_raw_jpeg_combo_quality).
 diamond_ring_burst = {
-    "trigger_offset_seconds": -8,  # start burst 8s before predicted C2
-    "duration_seconds": 15,  # run through the actual contact moment
-    "shutter_speed": "1/4000",  # D5200 ceiling; matches Espenak's Q12 value at f/11 ISO100
+    "trigger_offset_seconds": -7,  # start burst 8s before predicted C2
+    "duration_seconds": 12,  # run through the actual contact moment
+    "shutter_speed": "1/2000",  # D5500 ceiling; matches Espenak's Q12 value at f/11 ISO100
     "iso": 100,
     "aperture": "f/11",
     "mode": "burst_single_exposure",  # no bracket, just max fps at fixed settings
@@ -83,42 +83,53 @@ diamond_ring_burst = {
 # Totality (C2->C3): FILTER OFF. This is the main bracket sequence —
 # corona dynamic range is huge, so step across the full range.
 #
-# 8 steps, not the full 1-stop 14-step ladder, because pass COUNT matters
-# more than step density once you're shooting RAW. Measured on this
-# project's camera (pure NEF, ~2.2s average overhead per shot), against a
-# ~77-81s effective bracket window (a 92-96s totality, minus the ~7s
-# diamond_ring_in overruns past C2 and the 8s diamond_ring_out needs
-# before C3):
+# 8 steps, not a dense 1-stop ladder, because pass COUNT matters more than
+# step density once you're shooting RAW. Measured on this project's camera
+# (pure NEF, ~2.2s average overhead per shot) against a ~77-81s effective
+# bracket window (a 92-96s totality, minus the ~7s diamond_ring_in
+# overruns past C2 and the 8s diamond_ring_out needs before C3):
+# ~21s/pass, so 3-4 complete passes. Three passes crosses a real
+# threshold — median stacking needs >=3 samples per exposure level to
+# reject outliers (satellites, aircraft, cosmic rays); two can only
+# average. RAW's ~3 stops of recovery latitude makes 2-stop spacing safe.
 #
-#   14-step 1-stop ladder : ~38.5s/pass -> only 1 complete pass
-#   8-step  2-stop ladder : ~24.1s/pass -> 3 complete passes
+# PER-STEP ISO (iso_overrides) on the slow end. This site's eclipse
+# happens with the sun only a few degrees above the horizon — air mass
+# ~17, meaning several stops of atmospheric extinction, so every tier of
+# the corona needs far more exposure than Espenak's tables (which assume
+# a high sun) suggest. Concretely, the ~1 solar-radius corona needs
+# roughly 3-10s at ISO 200 f/11 here rather than a fraction of a second.
 #
-# Three passes crosses a real threshold: median stacking needs >=3
-# samples per exposure level to reject outliers (satellites, aircraft,
-# cosmic rays). Two can only average. RAW's ~3 stops of recovery latitude
-# makes 2-stop spacing safe — you can reconstruct an intermediate stop
-# from its neighbours — so the density lost costs little next to the
-# redundancy gained.
+# But long exposures trail: on a fixed tripod at 300mm the sky drifts
+# ~5.4 px/sec, so a 4s frame smears ~22 px. Raising ISO on just those
+# rungs buys depth without the drift — 2s@ISO500 is 1000 ISO-seconds
+# versus 4s@ISO200's 800, i.e. marginally DEEPER at half the trailing.
+# It also tightens spacing where the corona gradient is steepest (the
+# slow-end gaps become ~1.65 stops rather than 2.0). The fast rungs stay
+# at ISO 200, where smear is already sub-pixel and higher gain would only
+# cost headroom.
 #
-# Spacing is 2 stops through the fast/middle range and 1 stop at the slow
-# end (2 -> 4), where recovery helps least: down there you're fighting
-# read noise rather than clipping, and pushing a too-short exposure just
-# amplifies noise.
+# Depth beyond the 2s rung comes from STACKING rather than a longer
+# exposure: 3-4 frames at 2s@ISO500 stack to the noise of a single 6-8s
+# exposure while each still carries only 2s of trailing.
 #
-# Range endpoints unchanged: 1/2000 (chromosphere/prominence territory,
-# though the true flash is covered by diamond_ring_burst) through 4s
-# (Espenak's Q=-3 outer-corona/streamer value at f/11 ISO200). ISO 200
-# matches Espenak's own stated practice (ISO 200, f/9, 1/1000s to 1+s).
+# Extinction here is uncertain by +/-2 stops (it depends on haze and
+# aerosol on the day), so the ladder is deliberately kept WIDE — ~13
+# stops end to end — rather than optimised around any single predicted
+# value. Breadth is the insurance against not knowing until you're there.
 totality_bracket = {
-    "shutter_speeds": ["1/2000", "1/500", "1/125", "1/30", "1/8", "1/2", "2", "4"],
+    "shutter_speeds": ["1/2000", "1/500", "1/125", "1/30", "1/8", "1/2", "1", "2", "4"],
     "iso": 200,
+    # Slow rungs only — see camera.iso_for_step. Keys must match
+    # shutter_speeds exactly; run_eclipse.py refuses to start otherwise,
+    # since a typo here would silently shoot that rung at base ISO.
+    "iso_overrides": {"1": 320, "2": 500, "4": 500},
     "aperture": "f/11",
-    "repeat_until": "C3",  # loop the sequence back-to-back until totality ends
     # Alternate direction each pass (forward, reverse, forward...). At the
-    # seam this puts the two 4s exposures back to back — ideal for
+    # seam this puts the two slowest exposures back to back — ideal for
     # stacking the most delicate frames, since sky conditions and corona
     # rotation barely change between them — and halves the number of
-    # 13-stop 4s -> 1/2000 jumps. See camera.run_sequence.
+    # full-range shutter-speed jumps. See camera.run_sequence.
     "palindrome": True,
 }
 

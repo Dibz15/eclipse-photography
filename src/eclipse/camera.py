@@ -274,11 +274,35 @@ def trigger_capture_one(camera, event_timeout: float = 5.0) -> bool:
     return False
 
 
-def _apply_static_settings(camera, plan: dict) -> None:
-    if "iso" in plan:
+def _apply_static_settings(camera, plan: dict, include_iso: bool = True) -> None:
+    if include_iso and "iso" in plan:
         set_config(camera, "iso", str(plan["iso"]))
     if "aperture" in plan:
         set_config(camera, "aperture", plan["aperture"])
+
+
+def iso_for_step(plan: dict, shutter_speed: str) -> int | None:
+    """ISO for one rung of a bracket. Falls back to the plan's own `iso`
+    unless plan['iso_overrides'] names this shutter speed specifically.
+
+    Per-step ISO exists so the SLOW end of a bracket can trade sensor
+    gain for exposure time — a rung at 2s/ISO500 reaches marginally
+    deeper than 4s/ISO200 (1000 vs 800 ISO-seconds) while halving how far
+    the sky drifts during the exposure. The fast rungs stay at the plan's
+    base ISO, where smear is already sub-pixel and there's nothing to buy.
+    See bracket_plans.totality_bracket."""
+    overrides = plan.get("iso_overrides") or {}
+    return overrides.get(shutter_speed, plan.get("iso"))
+
+
+def unknown_iso_override_keys(plan: dict) -> list[str]:
+    """iso_overrides keys that don't match any of the plan's own
+    shutter_speeds — almost always a typo, and one that would otherwise
+    fail silently (the override simply never applies, and the rung shoots
+    at base ISO). Returns [] when everything lines up."""
+    overrides = plan.get("iso_overrides") or {}
+    speeds = set(plan.get("shutter_speeds", []))
+    return sorted(k for k in overrides if k not in speeds)
 
 
 def run_burst(camera, plan: dict) -> int:
@@ -377,11 +401,19 @@ def run_bracket_once(
     if timeout_margin is None:
         timeout_margin = DEFAULT_BRACKET_TIMEOUT_MARGIN
 
-    _apply_static_settings(camera, plan)
+    # ISO is handled per-shot below rather than once here: on a reversed
+    # pass the first rung is the slowest (and most likely to carry an
+    # override), so setting the base ISO up front would just be a wasted
+    # PTP round-trip immediately overwritten.
+    _apply_static_settings(camera, plan, include_iso=False)
 
     speeds = list(plan["shutter_speeds"])
     if reverse:
         speeds.reverse()
+
+    # Only issue a set_config when a rung actually needs a different ISO —
+    # every redundant PTP round-trip is time out of the window.
+    current_iso = None
 
     attempted = 0
     confirmed = 0
@@ -398,6 +430,10 @@ def run_bracket_once(
                 # frames are worth having.
                 skipped += 1
                 continue
+        iso = iso_for_step(plan, speed)
+        if iso is not None and iso != current_iso:
+            set_config(camera, "iso", str(iso))
+            current_iso = iso
         set_config(camera, "shutterspeed", speed)
         attempted += 1
         timeout = exposure + timeout_margin

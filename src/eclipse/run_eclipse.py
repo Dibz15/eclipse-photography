@@ -24,7 +24,13 @@ from pathlib import Path
 import yaml
 
 from . import bracket_plans as bp
-from .camera import connect, is_raw_jpeg_combo_quality, run_sequence, set_config
+from .camera import (
+    connect,
+    is_raw_jpeg_combo_quality,
+    run_sequence,
+    set_config,
+    unknown_iso_override_keys,
+)
 from .tzutil import resolve_tz
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
@@ -143,6 +149,20 @@ def _run_startup_focus_check(camera, cfg: dict, dry_run: bool) -> None:
 
 def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
     schedule = build_schedule(cfg)
+
+    # Fail loud, before any waiting: a typo'd iso_overrides key never
+    # applies, so that rung would silently shoot at base ISO — exactly
+    # the kind of wrong-but-plausible result that's invisible in the logs
+    # and unfixable after the fact.
+    for _, _, label, plan in schedule:
+        bad = unknown_iso_override_keys(plan)
+        if bad:
+            raise SystemExit(
+                f"{label}: iso_overrides keys {bad} don't match any of its "
+                f"shutter_speeds {plan.get('shutter_speeds')} — fix the typo in "
+                "bracket_plans.py (see camera.iso_for_step)."
+            )
+
     tz = resolve_tz(cfg.get("timezone"))
     camera = connect(
         cfg.get("camera", {}).get("port"),

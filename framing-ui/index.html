@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eclipse frame planner</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <h1>Eclipse frame planner</h1>
+    <p class="tagline">Work out where the sun will sit in your frame, minute by minute, before you're standing in the field.</p>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="panel controls">
+
+    <div class="card" id="card-location">
+      <h2>1. Location &amp; date</h2>
+      <div class="grid-2">
+        <label>Latitude
+          <input type="number" id="lat" step="0.00001" value="39.45254">
+        </label>
+        <label>Longitude
+          <input type="number" id="lon" step="0.00001" value="2.74123">
+        </label>
+      </div>
+      <div class="grid-2">
+        <label>Elevation (m)
+          <input type="number" id="elev" step="1" value="0">
+        </label>
+        <label>Date
+          <input type="date" id="date" value="2026-08-12">
+        </label>
+      </div>
+      <button id="btn-find" class="btn-primary">Find eclipse circumstances</button>
+      <p class="hint" id="find-status"></p>
+    </div>
+
+    <div class="card" id="card-times" hidden>
+      <h2>2. Contact times</h2>
+      <table class="times-table" id="times-table"></table>
+      <p class="hint">Computed in-browser with a general-purpose ephemeris (VSOP87/ELP2000). Typically agrees with a DE440s-based tool to within ~10&nbsp;seconds &mdash; fine for framing, not a substitute for your verified numbers. Override below if you want the plot to match your own script exactly.</p>
+      <label class="checkbox-row">
+        <input type="checkbox" id="override-toggle">
+        Override with my own C2 / max / C3 times (UTC)
+      </label>
+      <div id="override-fields" class="grid-3" hidden>
+        <label>C2 <input type="time" id="ov-c2" step="1"></label>
+        <label>Max <input type="time" id="ov-max" step="1"></label>
+        <label>C3 <input type="time" id="ov-c3" step="1"></label>
+      </div>
+    </div>
+
+    <div class="card" id="card-camera" hidden>
+      <h2>3. Camera</h2>
+      <div class="grid-2">
+        <label>Native resolution, wide side (px)
+          <input type="number" id="res-wide" value="6000" step="1">
+        </label>
+        <label>Native resolution, short side (px)
+          <input type="number" id="res-short" value="4000" step="1">
+        </label>
+      </div>
+      <label>Orientation for this shot
+        <select id="orientation">
+          <option value="landscape">Landscape (wide side horizontal)</option>
+          <option value="portrait" selected>Portrait (wide side vertical)</option>
+        </select>
+      </label>
+
+      <div class="subsection">
+        <h3>Plate scale</h3>
+        <label class="radio-row"><input type="radio" name="scale-mode" value="focal" checked> Compute from focal length</label>
+        <div id="mode-focal" class="grid-2 indent">
+          <label>35mm-equivalent focal length (mm)
+            <input type="number" id="focal-eq" value="450" step="1">
+          </label>
+        </div>
+        <label class="radio-row"><input type="radio" name="scale-mode" value="measured"> I measured it directly</label>
+        <div id="mode-measured" class="grid-2 indent" hidden>
+          <label>Sun diameter, measured (px)
+            <input type="number" id="measured-px" value="700" step="1">
+          </label>
+        </div>
+        <p class="hint" id="scale-readout"></p>
+      </div>
+    </div>
+
+    <div class="card" id="card-framing" hidden>
+      <h2>4. Framing</h2>
+      <label>Center the frame on
+        <select id="center-on">
+          <option value="peak" selected>Max eclipse</option>
+          <option value="c2">C2 (totality begins)</option>
+          <option value="c3">C3 (totality ends)</option>
+        </select>
+      </label>
+      <div class="grid-2">
+        <label>Window start, minutes before C2
+          <input type="number" id="pre-min" value="5" step="0.5" min="0">
+        </label>
+        <label>Window end, minutes after C3
+          <input type="number" id="post-min" value="2" step="0.5" min="0">
+        </label>
+      </div>
+      <label>Aim offset &mdash; positive pushes the sun path up, revealing foreground
+        <input type="range" id="aim-offset" min="-3000" max="3000" step="10" value="0">
+        <span class="range-readout" id="aim-offset-readout">0 px</span>
+      </label>
+      <div class="grid-2">
+        <label>Corona clearance, x solar radii
+          <input type="number" id="corona-mult" value="2" step="0.1" min="1">
+        </label>
+        <label>Hills / obstruction at horizon (deg)
+          <input type="number" id="hill-deg" value="0" step="0.05" min="0">
+        </label>
+      </div>
+    </div>
+
+  </section>
+
+  <section class="panel preview">
+    <div class="card">
+      <h2>Frame preview</h2>
+      <div id="svg-wrap"></div>
+      <div class="scrub-row">
+        <input type="range" id="scrub" min="0" max="1000" value="0" step="1">
+        <span class="range-readout" id="scrub-readout">&mdash;</span>
+      </div>
+      <p class="hint" id="clip-warning"></p>
+    </div>
+    <div class="card" id="card-readout" hidden>
+      <h2>Event readout</h2>
+      <table class="times-table" id="readout-table"></table>
+      <button id="btn-download" class="btn-secondary">Download SVG</button>
+    </div>
+  </section>
+
+</main>
+
+<script src="astronomy.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

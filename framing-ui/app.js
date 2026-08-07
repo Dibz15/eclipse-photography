@@ -159,7 +159,8 @@
     render();
   });
   $('scrub').addEventListener('input', render);
-  $('btn-download').addEventListener('click', downloadSVG);
+  $('btn-download-svg').addEventListener('click', downloadSVG);
+  $('btn-download-png').addEventListener('click', downloadPNG);
 
   // ---- core render ----------------------------------------------------------
   function render() {
@@ -302,7 +303,7 @@
       const isPeak = k.label === 'Max';
       svg += `<circle cx="${x}" cy="${y}" r="${r}" fill="${isPeak ? '#e8734c' : '#f2a23c'}" fill-opacity="0.3" stroke="${isPeak ? '#e8734c' : '#f2a23c'}" stroke-width="1"/>`;
       const ly = labelYs[i];
-      svg += `<line x1="${x}" y1="${y}" x2="${vbW - 160}" y2="${ly}" stroke="#2c3253" stroke-width="0.5" stroke-dasharray="2 2"/>`;
+      svg += `<line x1="${x}" y1="${y}" x2="${vbW - 160}" y2="${ly}" stroke="#6c6f8e" stroke-width="0.75" stroke-dasharray="2 2"/>`;
       svg += `<text x="${vbW - 154}" y="${ly - 4}" fill="#e7e6de" font-size="13" font-family="sans-serif">${k.label} \u00b7 ${fmtUTC(k.time.date)}</text>`;
       svg += `<text x="${vbW - 154}" y="${ly + 12}" fill="#9a9cb5" font-size="11" font-family="sans-serif">alt ${k.alt.toFixed(2)}\u00b0, az ${k.az.toFixed(2)}\u00b0</text>`;
     });
@@ -325,6 +326,43 @@
     a.download = 'eclipse-frame-plan.svg';
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  function downloadPNG() {
+    const svgEl = document.querySelector('#svg-wrap svg');
+    if (!svgEl) return;
+    const vb = svgEl.viewBox.baseVal;
+    const w = (vb && vb.width) || svgEl.clientWidth || 660;
+    const h = (vb && vb.height) || svgEl.clientHeight || 400;
+    const scale = 2; // render at 2x the diagram's own coordinate space for crispness
+
+    const xml = new XMLSerializer().serializeToString(svgEl);
+    const svgBlob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = w * scale;
+      canvas.height = h * scale;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#10131f';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'eclipse-frame-plan.png';
+        a.click();
+      }, 'image/png');
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      alert('PNG export failed \u2014 try Download SVG instead.');
+    };
+    img.src = url;
   }
 
   // initial UI wiring for hidden sections

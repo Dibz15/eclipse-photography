@@ -1,9 +1,17 @@
 import datetime as dt
+import os
+import time
 
 import pytest
 
 from eclipse import bracket_plans as bp
-from eclipse.run_eclipse import DEEP_CRESCENT_LEAD, build_schedule, run
+from eclipse.run_eclipse import (
+    DEEP_CRESCENT_LEAD,
+    TIME_CRITICAL_PHASES,
+    build_schedule,
+    run,
+    unknown_download_phases,
+)
 
 CFG = {
     "date": "2026-08-12",
@@ -122,3 +130,83 @@ def test_run_refuses_combo_image_quality_before_scheduling_starts():
     cfg = {**CFG, "camera": {"image_quality": "NEF+Fine"}}
     with pytest.raises(SystemExit, match="RAW\\+JPEG combo"):
         run(cfg, dry_run=True)
+
+
+def test_run_refuses_typod_iso_override_keys(monkeypatch):
+    # A typo'd override key silently never applies, so that rung would
+    # shoot at base ISO with nothing in the logs to say so. Must raise
+    # before any waiting starts.
+    bad_plan = {**bp.totality_bracket, "iso_overrides": {"1": 320, "9": 500}}
+    monkeypatch.setattr(bp, "totality_bracket", bad_plan)
+    with pytest.raises(SystemExit, match="iso_overrides"):
+        run(CFG, dry_run=True)
+
+
+def test_run_refuses_unknown_download_phase():
+    cfg = {**CFG, "camera": {"download_phases": ["totalityy"]}}
+    with pytest.raises(SystemExit, match="unknown phase"):
+        run(cfg, dry_run=True)
+
+
+def test_unknown_download_phases_flags_typos():
+    labels = [label for _, _, label, _ in build_schedule(CFG)]
+    assert unknown_download_phases(["partial_pre_totality", "totalityy"], labels) == ["totalityy"]
+
+
+def test_unknown_download_phases_empty_when_all_valid():
+    labels = [label for _, _, label, _ in build_schedule(CFG)]
+    assert unknown_download_phases(["partial_pre_totality", "totality"], labels) == []
+    assert unknown_download_phases(None, labels) == []
+
+
+def test_time_critical_phases_are_real_schedule_labels():
+    # The warning list must stay in sync with build_schedule's labels.
+    labels = {label for _, _, label, _ in build_schedule(CFG)}
+    assert TIME_CRITICAL_PHASES <= labels
+
+
+# --------------------------------------------------------------------------
+# Timezone independence. Scheduling is UTC-only by design; `timezone` is
+# display-only. A wrong, missing or invalid timezone must never move a
+# contact time -- it can only change what the log prints alongside it.
+# --------------------------------------------------------------------------
+
+def _windows(cfg):
+    return [(start, end, label) for start, end, label, _ in build_schedule(cfg)]
+
+
+def test_schedule_identical_across_config_timezones():
+    baseline = _windows({**CFG, "timezone": "Europe/Madrid"})
+    for tzname in ("Europe/London", "America/Denver", "Pacific/Kiritimati", "UTC"):
+        assert _windows({**CFG, "timezone": tzname}) == baseline, tzname
+
+
+def test_schedule_identical_with_missing_or_invalid_timezone():
+    baseline = _windows({**CFG, "timezone": "Europe/Madrid"})
+    for tzname in (None, "", "Not/AReal_Zone"):
+        # An unrecognised zone degrades to UTC-only display (see
+        # tzutil.resolve_tz) -- it must not shift the schedule.
+        assert _windows({**CFG, "timezone": tzname}) == baseline, repr(tzname)
+    cfg_no_tz = {k: v for k, v in CFG.items() if k != "timezone"}
+    assert _windows(cfg_no_tz) == baseline
+
+
+def test_schedule_identical_across_os_timezones():
+    # The laptop's own timezone setting must not matter either -- only its
+    # absolute clock does.
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset unavailable on this platform")
+    original = os.environ.get("TZ")
+    try:
+        results = []
+        for tz in ("UTC", "Europe/London", "Pacific/Kiritimati", "America/Denver"):
+            os.environ["TZ"] = tz
+            time.tzset()
+            results.append(_windows(CFG))
+        assert all(r == results[0] for r in results)
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()

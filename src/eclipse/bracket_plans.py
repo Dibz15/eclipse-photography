@@ -57,7 +57,7 @@ deep_crescent_bracket = {
 # NEF) once warmed up, vs. ~0.4-0.5fps for plain capture() at the same
 # quality — so this 15-second window gets roughly 7-8 frames.
 #
-# Shutter speed is the D5500's ceiling and matches Espenak's Baily's Beads
+# Shutter speed is the D5200's ceiling and matches Espenak's Baily's Beads
 # (Q=12) value at f/11/ISO100 almost exactly — deliberately NOT biased
 # brighter the way a single exposure would be. Because this is a burst,
 # highlight protection on the bead matters more than any one frame's
@@ -74,7 +74,7 @@ deep_crescent_bracket = {
 diamond_ring_burst = {
     "trigger_offset_seconds": -7,  # start burst 8s before predicted C2
     "duration_seconds": 12,  # run through the actual contact moment
-    "shutter_speed": "1/2000",  # D5500 ceiling; matches Espenak's Q12 value at f/11 ISO100
+    "shutter_speed": "1/2000",  # D5200 ceiling; matches Espenak's Q12 value at f/11 ISO100
     "iso": 100,
     "aperture": "f/11",
     "mode": "burst_single_exposure",  # no bracket, just max fps at fixed settings
@@ -118,7 +118,7 @@ diamond_ring_burst = {
 # stops end to end — rather than optimised around any single predicted
 # value. Breadth is the insurance against not knowing until you're there.
 totality_bracket = {
-    "shutter_speeds": ["1/2000", "1/500", "1/125", "1/30", "1/8", "1/2", "1", "2", "4"],
+    "shutter_speeds": ["1/2000", "1/500", "1/125", "1/30", "1/8", "1/2", "1", "2"],
     "iso": 200,
     # Slow rungs only — see camera.iso_for_step. Keys must match
     # shutter_speeds exactly; run_eclipse.py refuses to start otherwise,
@@ -146,6 +146,18 @@ def _select_indices(n_total: int, k: int) -> list[int]:
     if k < 2:
         return [0]
     return sorted({round(i * (n_total - 1) / (k - 1)) for i in range(k)})
+
+
+def _trimmed_plan(bracket_plan: dict, kept: list[str]) -> dict:
+    """Shallow copy of bracket_plan with shutter_speeds replaced by
+    `kept`, and iso_overrides pruned to match. Pruning matters: an
+    override naming a rung that trimming removed would otherwise look
+    exactly like a typo to run_eclipse.py's startup validation."""
+    trimmed = {**bracket_plan, "shutter_speeds": kept}
+    overrides = bracket_plan.get("iso_overrides")
+    if overrides:
+        trimmed["iso_overrides"] = {k: v for k, v in overrides.items() if k in set(kept)}
+    return trimmed
 
 
 def trim_to_fit(bracket_plan: dict, totality_seconds: float, overhead: float | None = None) -> dict:
@@ -194,9 +206,23 @@ def trim_to_fit(bracket_plan: dict, totality_seconds: float, overhead: float | N
 
     for k in range(n - 1, 0, -1):
         if total_seconds_for(k) <= totality_seconds:
-            trimmed = [speeds[i] for i in _select_indices(n, k)]
-            return {**bracket_plan, "shutter_speeds": trimmed}
+            return _trimmed_plan(bracket_plan, [speeds[i] for i in _select_indices(n, k)])
 
     # Even the single fastest shot doesn't fit — take it anyway rather
     # than return an empty bracket.
-    return {**bracket_plan, "shutter_speeds": [speeds[0]]}
+    return _trimmed_plan(bracket_plan, [speeds[0]])
+
+
+def all_plans() -> dict[str, dict]:
+    """Every plan defined in this module, by name. Used by run_eclipse.py
+    to validate at startup against these SOURCE definitions rather than
+    the copies in the schedule, which trim_to_fit() may legitimately have
+    trimmed — validating the trimmed copy would miss a typo in a rung
+    that happened to be trimmed away, and (before _trimmed_plan pruned
+    them) falsely flagged overrides for rungs trimming had removed."""
+    return {
+        "partial_phase_bracket": partial_phase_bracket,
+        "deep_crescent_bracket": deep_crescent_bracket,
+        "diamond_ring_burst": diamond_ring_burst,
+        "totality_bracket": totality_bracket,
+    }

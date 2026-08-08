@@ -222,6 +222,7 @@ behavior discovered while building this, not speculative caution:
 ```
 config.yaml            <- the only file you touch day-before (gitignored)
 config.example.yaml    <- tracked template for the above, with field comments
+framing-ui/           <- UI assistant for framing the totality in your camera frame, if you don't have a tracker mount
 src/eclipse/
   timings.py          <- Skyfield: root-finds C1-C4, max eclipse
   tzutil.py           <- resolves config's timezone field for display only

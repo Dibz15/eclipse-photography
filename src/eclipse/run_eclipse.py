@@ -147,6 +147,17 @@ def _run_startup_focus_check(camera, cfg: dict, dry_run: bool) -> None:
             raise SystemExit("Stopped before the scheduled run -- fix focus and try again.")
 
 
+def unknown_download_phases(download_phases, known_labels) -> list[str]:
+    """Phase labels in config.yaml's camera.download_phases that don't
+    match any label in the built schedule — almost always a typo, and one
+    that would otherwise fail silently (no downloads ever appear, and you
+    only notice by their absence). Returns [] when everything matches."""
+    return sorted(set(download_phases or []) - set(known_labels))
+
+
+TIME_CRITICAL_PHASES = frozenset({"totality", "diamond_ring_in", "diamond_ring_out"})
+
+
 def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
     schedule = build_schedule(cfg)
 
@@ -164,6 +175,28 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             )
 
     tz = resolve_tz(cfg.get("timezone"))
+
+    # Optional per-phase preview downloads, for watching focus drift and
+    # lens fogging during the long partial phases without needing the
+    # camera's LCD (dark while tethered). Validated against the real
+    # schedule labels: a typo would otherwise just silently never
+    # download, and you'd discover that only by its absence.
+    download_phases = set(cfg.get("camera", {}).get("download_phases") or [])
+    known_labels = {label for _, _, label, _ in schedule}
+    unknown = unknown_download_phases(download_phases, known_labels)
+    if unknown:
+        raise SystemExit(
+            f"config.yaml's camera.download_phases contains unknown phase(s) "
+            f"{unknown}. Valid labels: {sorted(known_labels)}"
+        )
+    if download_phases & TIME_CRITICAL_PHASES:
+        log.warning(
+            "download_phases includes a time-critical phase %s — each download "
+            "costs window time that can't be recovered. This is allowed but "
+            "rarely what you want.",
+            sorted(download_phases & TIME_CRITICAL_PHASES),
+        )
+    monitor_dir = Path(cfg.get("output_dir", "./eclipse_frames")) / "monitor"
     camera = connect(
         cfg.get("camera", {}).get("port"),
         dry_run=dry_run,
@@ -219,6 +252,7 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
                 end_time=end_time,
                 overhead=cfg.get("camera", {}).get("bracket_overhead"),
                 timeout_margin=cfg.get("camera", {}).get("bracket_timeout_margin"),
+                download_dir=(monitor_dir if label in download_phases else None),
             )
         except Exception:
             log.exception("Error during %s — continuing to next event", label)

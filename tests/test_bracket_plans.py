@@ -74,3 +74,36 @@ def test_trim_overhead_none_matches_omitted_overhead():
     omitted = trim_to_fit(totality_bracket, totality_seconds=15)
     explicit_none = trim_to_fit(totality_bracket, totality_seconds=15, overhead=None)
     assert explicit_none["shutter_speeds"] == omitted["shutter_speeds"]
+
+
+def test_trim_prunes_iso_overrides_for_removed_rungs():
+    # Regression: trimming used to keep overrides naming rungs it had just
+    # removed, which run_eclipse.py's startup validation then reported as
+    # typos -- blocking a rehearsal with a short synthetic totality.
+    plan = {
+        "shutter_speeds": ["1/2000", "1/500", "1/8", "1", "2"],
+        "iso": 200,
+        "iso_overrides": {"1": 320, "2": 500},
+    }
+    trimmed = trim_to_fit(plan, totality_seconds=6)
+    kept = set(trimmed["shutter_speeds"])
+    assert set(trimmed["iso_overrides"]) <= kept
+    assert plan["iso_overrides"] == {"1": 320, "2": 500}  # source untouched
+
+
+def test_trim_keeps_overrides_for_surviving_rungs():
+    plan = {
+        "shutter_speeds": ["1/2000", "1/500", "1/8", "1", "2"],
+        "iso": 200,
+        "iso_overrides": {"2": 500},
+    }
+    trimmed = trim_to_fit(plan, totality_seconds=1000)  # no trimming needed
+    assert trimmed["iso_overrides"] == {"2": 500}
+
+
+def test_all_plans_have_valid_iso_overrides():
+    from eclipse.bracket_plans import all_plans
+    from eclipse.camera import unknown_iso_override_keys
+
+    for name, plan in all_plans().items():
+        assert unknown_iso_override_keys(plan) == [], name

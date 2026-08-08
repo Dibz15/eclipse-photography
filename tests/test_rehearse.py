@@ -1,8 +1,10 @@
 import datetime as dt
+import os
+import time
 
 import pytest
 
-from eclipse.rehearse import build_synthetic_timings
+from eclipse.rehearse import build_config_timings, build_synthetic_timings
 
 
 def _to_dt(date_str: str, hms: str) -> dt.datetime:
@@ -68,3 +70,92 @@ def test_does_not_raise_when_comfortably_within_the_day():
         start_in=10, partial_seconds=60, totality_seconds=60, now=fixed_now
     )
     assert date_str == "2026-08-12"
+
+
+# --------------------------------------------------------------------------
+# --from-config: real timings_utc re-dated to today/tomorrow
+# --------------------------------------------------------------------------
+
+REAL_CFG = {
+    "timings_utc": {
+        "C1": "17:01:23",
+        "C2": "18:23:47",
+        "max": "18:24:34",
+        "C3": "18:25:21",
+        "C4": "19:48:02",
+    }
+}
+
+
+def test_from_config_uses_today_when_c1_still_ahead():
+    now = dt.datetime(2026, 8, 12, 9, 0, 0)  # well before C1
+    date_str, timings, rolled = build_config_timings(REAL_CFG, now=now)
+    assert date_str == "2026-08-12"
+    assert rolled is False
+    assert timings == REAL_CFG["timings_utc"]  # verbatim, times of day preserved
+
+
+def test_from_config_rolls_to_tomorrow_once_c1_has_passed():
+    now = dt.datetime(2026, 8, 12, 17, 30, 0)  # after C1, mid-partial
+    date_str, _timings, rolled = build_config_timings(REAL_CFG, now=now)
+    assert date_str == "2026-08-13"
+    assert rolled is True
+
+
+def test_from_config_rolls_when_whole_event_is_over():
+    now = dt.datetime(2026, 8, 12, 23, 0, 0)
+    date_str, _t, rolled = build_config_timings(REAL_CFG, now=now)
+    assert date_str == "2026-08-13"
+    assert rolled is True
+
+
+def test_from_config_preserves_real_durations():
+    now = dt.datetime(2026, 8, 12, 9, 0, 0)
+    date_str, timings, _ = build_config_timings(REAL_CFG, now=now)
+
+    def at(k):
+        return dt.datetime.strptime(f"{date_str} {timings[k]}", "%Y-%m-%d %H:%M:%S")
+
+    assert (at("C3") - at("C2")).total_seconds() == 94  # the real totality
+    assert (at("C4") - at("C1")).total_seconds() == 9_999
+
+
+def test_from_config_requires_timings_block():
+    with pytest.raises(ValueError, match="no timings_utc"):
+        build_config_timings({}, now=dt.datetime(2026, 8, 12, 9, 0, 0))
+
+
+def test_from_config_requires_all_contacts():
+    cfg = {"timings_utc": {"C1": "17:00:00", "C2": "18:00:00"}}
+    with pytest.raises(ValueError, match="missing"):
+        build_config_timings(cfg, now=dt.datetime(2026, 8, 12, 9, 0, 0))
+
+
+def test_from_config_rejects_midnight_crossing():
+    cfg = {"timings_utc": {k: v for k, v in zip(
+        ("C1", "C2", "max", "C3", "C4"),
+        ("23:00:00", "23:40:00", "23:41:00", "23:42:00", "00:30:00"), strict=True)}}
+    with pytest.raises(ValueError, match="midnight"):
+        build_config_timings(cfg, now=dt.datetime(2026, 8, 12, 9, 0, 0))
+
+
+def test_from_config_independent_of_os_timezone():
+    # "today" means today in UTC, decided from the absolute clock -- never
+    # from the machine's local timezone.
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset unavailable on this platform")
+    now = dt.datetime(2026, 8, 12, 9, 0, 0)
+    original = os.environ.get("TZ")
+    try:
+        results = []
+        for tz in ("UTC", "Europe/London", "Pacific/Kiritimati", "America/Denver"):
+            os.environ["TZ"] = tz
+            time.tzset()
+            results.append(build_config_timings(REAL_CFG, now=now))
+        assert all(r == results[0] for r in results)
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()

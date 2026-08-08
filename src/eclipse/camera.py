@@ -1,11 +1,11 @@
 """
-python-gphoto2 wrapper for a Nikon D5200: connect, configure, and run the
+python-gphoto2 wrapper for the Nikon D5500: connect, configure, and run the
 bracket/burst sequences defined in bracket_plans.py.
 
-`import gphoto2` is deliberately lazy (inside connect() / capture_one()),
-so the rest of this project — timings, bracket trimming math, tests — stays
-importable on a machine that doesn't have libgphoto2 installed, e.g. this
-dev laptop before you've brewed it.
+`import gphoto2` is deliberately lazy (inside connect() / capture_one() /
+trigger_capture_one()), so the rest of this project — timings, bracket
+trimming math, tests — stays importable on a machine that doesn't have
+libgphoto2 installed, e.g. this dev laptop before you've brewed it.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+from pathlib import Path
 
 log = logging.getLogger("eclipse.camera")
 
@@ -89,7 +90,12 @@ def connect(
             log.warning(
                 "Couldn't select port %s explicitly, falling back to auto-detect", port
             )
-    camera.init()
+    try:
+        camera.init()
+    except gp.GPhoto2Error as e:
+        log.error("Couldn't connect to camera, is it plugged in?")
+        raise RuntimeError("Couldn't connect to camera") from e
+        
     log.info("Connected to camera%s", f" on {port}" if port else " (auto-detected)")
 
     if enforce_capture_target:
@@ -224,7 +230,51 @@ def capture_one(camera):
     return camera.capture(gp.GP_CAPTURE_IMAGE)
 
 
-def trigger_capture_one(camera, event_timeout: float = 5.0) -> bool:
+def download_preview(camera, folder: str, name: str, out_dir: Path) -> Path | None:
+    """Saves the EMBEDDED JPEG PREVIEW of a just-captured frame to out_dir,
+    for monitoring focus drift and lens fogging during the long partial
+    phases without touching the camera's LCD (which is dark while
+    tethered anyway).
+
+    Deliberately the preview, not the full file:
+      - it's a small JPEG rather than a ~25MB NEF, so it costs a fraction
+        of the download time — the partial-phase interval has room, but
+        there's no reason to spend it;
+      - PIL can read it, so it can be sharpness-scored automatically,
+        which a raw NEF can't be without an extra RAW-decoding dependency;
+      - the real full-resolution frame is untouched on the card either
+        way. This is a monitoring copy, not the deliverable — those still
+        come off the card afterwards via scripts/pull_from_card.py.
+
+    Never raises: a failed monitoring download must not interrupt a
+    bracket. Returns the local path, or None if anything went wrong."""
+    import gphoto2 as gp
+
+    try:
+        cam_file = camera.file_get(folder, name, gp.GP_FILE_TYPE_PREVIEW)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        local = out_dir / f"{Path(name).stem}_preview.jpg"
+        cam_file.save(str(local))
+    except Exception:
+        log.exception("Preview download failed for %s (continuing)", name)
+        return None
+
+    # Sharpness score is a nice-to-have on top: a falling trend across the
+    # partial phase means focus drift, and a sudden collapse means the
+    # lens (or filter) has fogged. Imported lazily — focus_check imports
+    # this module, so a top-level import would be circular.
+    try:
+        from .focus_check import score_image
+
+        log.info("Preview %s  sharpness=%.1f", local.name, score_image(local, roi=None))
+    except Exception:  # noqa: BLE001 - scoring is optional; never break a bracket for it
+        log.info("Preview %s (not scored)", local.name)
+    return local
+
+
+def trigger_capture_one(
+    camera, event_timeout: float = 5.0, download_dir: Path | None = None
+) -> bool:
     """Fires trigger_capture() and confirms it via wait_for_event(),
     rather than the full trigger-wait-resolve cycle plain capture()
     does internally (gphoto2's own docs, and multiple independent
@@ -257,10 +307,16 @@ def trigger_capture_one(camera, event_timeout: float = 5.0) -> bool:
 
     Returns True if a FILE_ADDED event was confirmed, False if the
     timeout elapsed without one — doesn't raise, since one missed frame
-    in a burst shouldn't abort the rest of it."""
+    in a burst shouldn't abort the rest of it.
+
+    If download_dir is given, the frame's embedded JPEG preview is saved
+    there for focus/fog monitoring — see download_preview(). Confirmation
+    is unaffected by whether that download succeeds."""
     if isinstance(camera, DryRunCamera):
         camera.trigger_capture()
         camera.wait_for_event(int(event_timeout * 1000))
+        if download_dir is not None:
+            log.info("[dry-run] would download preview to %s", download_dir)
         return True
 
     import gphoto2 as gp
@@ -268,8 +324,10 @@ def trigger_capture_one(camera, event_timeout: float = 5.0) -> bool:
     camera.trigger_capture()
     trigger_start = time.monotonic()
     while time.monotonic() - trigger_start < event_timeout:
-        event_type, _event_data = camera.wait_for_event(3000)  # ms, per poll
+        event_type, event_data = camera.wait_for_event(3000)  # ms, per poll
         if event_type == gp.GP_EVENT_FILE_ADDED:
+            if download_dir is not None:
+                download_preview(camera, event_data.folder, event_data.name, download_dir)
             return True
     return False
 
@@ -362,6 +420,7 @@ def run_bracket_once(
     overhead: float | None = None,
     timeout_margin: float | None = None,
     reverse: bool = False,
+    download_dir: Path | None = None,
 ) -> tuple[int, int, int]:
     """Fires one pass through plan['shutter_speeds'], one shot per speed.
     Uses trigger_capture_one() rather than plain capture_one() — verified
@@ -437,7 +496,7 @@ def run_bracket_once(
         set_config(camera, "shutterspeed", speed)
         attempted += 1
         timeout = exposure + timeout_margin
-        if trigger_capture_one(camera, event_timeout=timeout):
+        if trigger_capture_one(camera, event_timeout=timeout, download_dir=download_dir):
             confirmed += 1
     return confirmed, attempted, skipped
 
@@ -448,6 +507,7 @@ def run_sequence(
     end_time: dt.datetime | None = None,
     overhead: float | None = None,
     timeout_margin: float | None = None,
+    download_dir: Path | None = None,
 ):
     """Dispatches on the plan's shape (see bracket_plans.py):
 
@@ -470,6 +530,12 @@ def run_sequence(
 
     `overhead` and `timeout_margin` are passed through to
     run_bracket_once — see its docstring for why they're separate values.
+
+    `download_dir`, if given, saves each frame's embedded JPEG preview
+    there for focus-drift and fogging monitoring (see download_preview).
+    Intended for the long filtered partial phases, where the interval has
+    ample room; it is NOT applied to burst plans, whose windows are far
+    too tight to spend on anything optional.
     """
     if plan.get("mode") == "burst_single_exposure":
         run_burst(camera, plan)
@@ -488,6 +554,7 @@ def run_sequence(
             overhead=overhead,
             timeout_margin=timeout_margin,
             reverse=reverse,
+            download_dir=download_dir,
         )
         pass_index += 1
         log.info(

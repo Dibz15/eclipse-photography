@@ -7,9 +7,11 @@ from eclipse.camera import (
     DryRunCamera,
     _force_capture_target_to_card,
     is_raw_jpeg_combo_quality,
+    iso_for_step,
     pick_card_choice,
     shutter_speed_seconds,
     trigger_capture_one,
+    unknown_iso_override_keys,
 )
 
 
@@ -218,7 +220,7 @@ class _RecordingCamera:
 def test_run_bracket_once_fires_every_speed_when_no_end_time(monkeypatch):
     import eclipse.camera as cam
 
-    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
     camera = _RecordingCamera()
     plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
     confirmed, attempted, skipped = cam.run_bracket_once(camera, plan)
@@ -229,7 +231,7 @@ def test_run_bracket_once_fires_every_speed_when_no_end_time(monkeypatch):
 def test_run_bracket_once_reverse_fires_slowest_first(monkeypatch):
     import eclipse.camera as cam
 
-    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
     camera = _RecordingCamera()
     plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
     cam.run_bracket_once(camera, plan, reverse=True)
@@ -241,7 +243,7 @@ def test_run_bracket_once_skips_shots_that_will_not_fit(monkeypatch):
 
     import eclipse.camera as cam
 
-    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
     camera = _RecordingCamera()
     plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
     # 5s left, overhead 1s: 1/2000 (~1s) and 1/500 (~1s) fit; "4" needs
@@ -261,7 +263,7 @@ def test_run_bracket_once_skips_everything_when_no_time_left(monkeypatch):
 
     import eclipse.camera as cam
 
-    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
     camera = _RecordingCamera()
     plan = {"shutter_speeds": ["1/2000", "4"]}
     end_time = cam._utcnow() - _dt.timedelta(seconds=1)  # already past
@@ -277,7 +279,7 @@ def test_run_sequence_palindrome_alternates_direction(monkeypatch):
 
     import eclipse.camera as cam
 
-    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
     camera = _RecordingCamera()
     plan = {"shutter_speeds": ["1/2000", "1/500"], "palindrome": True}
     # Enough time for a few passes at ~0 real cost per shot.
@@ -293,7 +295,7 @@ def test_run_sequence_terminates_when_window_is_spent(monkeypatch):
 
     import eclipse.camera as cam
 
-    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
     camera = _RecordingCamera()
     plan = {"shutter_speeds": ["1/2000", "4"]}
     # end_time already past: run_bracket_once fires nothing, and
@@ -308,7 +310,7 @@ def test_run_bracket_once_reversed_still_fires_faster_shots_after_a_skip(monkeyp
 
     import eclipse.camera as cam
 
-    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0: True)
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
     camera = _RecordingCamera()
     plan = {"shutter_speeds": ["1/2000", "1/500", "4"]}
     # Reversed order is 4, 1/500, 1/2000. With ~3s left and overhead 1s,
@@ -321,3 +323,170 @@ def test_run_bracket_once_reversed_still_fires_faster_shots_after_a_skip(monkeyp
     assert skipped == 1
     assert attempted == 2
     assert camera.speeds_set == ["1/500", "1/2000"]
+
+
+# --------------------------------------------------------------------------
+# Per-step ISO
+# --------------------------------------------------------------------------
+
+def test_iso_for_step_falls_back_to_plan_iso():
+    plan = {"iso": 200, "iso_overrides": {"2": 500}}
+    assert iso_for_step(plan, "1/500") == 200
+
+
+def test_iso_for_step_uses_override_when_present():
+    plan = {"iso": 200, "iso_overrides": {"1": 320, "2": 500}}
+    assert iso_for_step(plan, "1") == 320
+    assert iso_for_step(plan, "2") == 500
+
+
+def test_iso_for_step_handles_plan_without_overrides():
+    assert iso_for_step({"iso": 200}, "2") == 200
+
+
+def test_unknown_iso_override_keys_flags_typos():
+    plan = {"shutter_speeds": ["1/500", "1", "2"], "iso_overrides": {"1": 320, "4": 500}}
+    assert unknown_iso_override_keys(plan) == ["4"]
+
+
+def test_unknown_iso_override_keys_empty_when_all_match():
+    plan = {"shutter_speeds": ["1/500", "1", "2"], "iso_overrides": {"1": 320, "2": 500}}
+    assert unknown_iso_override_keys(plan) == []
+
+
+def test_real_totality_bracket_overrides_are_valid():
+    # Guards the actual shipped plan, not just a synthetic one.
+    from eclipse.bracket_plans import totality_bracket
+
+    assert unknown_iso_override_keys(totality_bracket) == []
+
+
+class _IsoRecordingCamera(_RecordingCamera):
+    """Records ISO changes as well as shutter speeds, in call order."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def set_value(self, value):
+        super().set_value(value)
+        if self._current in ("iso", "shutterspeed"):
+            self.calls.append((self._current, value))
+
+
+def test_run_bracket_once_applies_per_step_iso(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
+    camera = _IsoRecordingCamera()
+    plan = {
+        "shutter_speeds": ["1/500", "1", "2"],
+        "iso": 200,
+        "iso_overrides": {"1": 320, "2": 500},
+    }
+    cam.run_bracket_once(camera, plan)
+    iso_calls = [v for k, v in camera.calls if k == "iso"]
+    # Base ISO set once by _apply_static_settings, then only where a rung
+    # actually differs -- no redundant round-trips for the 1/500 rung.
+    assert iso_calls == ["200", "320", "500"]
+
+
+def test_run_bracket_once_does_not_reset_iso_for_unchanged_rungs(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "trigger_capture_one", lambda c, event_timeout=5.0, download_dir=None: True)
+    camera = _IsoRecordingCamera()
+    plan = {"shutter_speeds": ["1/500", "1/125", "1/30"], "iso": 200}
+    cam.run_bracket_once(camera, plan)
+    assert [v for k, v in camera.calls if k == "iso"] == ["200"]
+
+
+# --------------------------------------------------------------------------
+# Optional preview download (focus/fog monitoring during partial phases)
+# --------------------------------------------------------------------------
+
+class _FakeCamFile:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.saved_to = None
+
+    def save(self, path):
+        if self.fail:
+            raise RuntimeError("save failed")
+        self.saved_to = path
+        with open(path, "wb") as fh:
+            fh.write(b"not-a-real-jpeg")
+
+
+class _DownloadCamera(_FakeEventCamera):
+    def __init__(self, events, fail_get=False, fail_save=False):
+        super().__init__(events)
+        self.fail_get = fail_get
+        self.fail_save = fail_save
+        self.file_get_calls = []
+
+    def file_get(self, folder, name, filetype):
+        self.file_get_calls.append((folder, name, filetype))
+        if self.fail_get:
+            raise RuntimeError("file_get failed")
+        return _FakeCamFile(fail=self.fail_save)
+
+
+class _Ev:
+    def __init__(self, folder, name):
+        self.folder, self.name = folder, name
+
+
+def test_download_preview_writes_file(tmp_path, fake_gphoto2_module):
+    import eclipse.camera as cam
+
+    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
+    camera = _DownloadCamera([])
+    out = cam.download_preview(camera, "/store/DCIM", "DSC_0645.NEF", tmp_path)
+    assert out is not None and out.exists()
+    assert out.name == "DSC_0645_preview.jpg"
+    # Must request the PREVIEW, not the full file -- the point is speed and
+    # a PIL-readable JPEG rather than a 25MB NEF.
+    assert camera.file_get_calls[0][2] == "preview"
+
+
+def test_download_preview_never_raises_on_failure(tmp_path, fake_gphoto2_module):
+    import eclipse.camera as cam
+
+    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
+    assert cam.download_preview(_DownloadCamera([], fail_get=True), "f", "n.NEF", tmp_path) is None
+    assert cam.download_preview(_DownloadCamera([], fail_save=True), "f", "n.NEF", tmp_path) is None
+
+
+def test_trigger_capture_one_downloads_when_dir_given(tmp_path, fake_gphoto2_module):
+    import eclipse.camera as cam
+
+    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
+    camera = _DownloadCamera(
+        [(fake_gphoto2_module.GP_EVENT_FILE_ADDED, _Ev("/store/DCIM", "DSC_0001.NEF"))]
+    )
+    assert cam.trigger_capture_one(camera, event_timeout=1.0, download_dir=tmp_path) is True
+    assert len(camera.file_get_calls) == 1
+
+
+def test_trigger_capture_one_skips_download_by_default(fake_gphoto2_module):
+    import eclipse.camera as cam
+
+    camera = _DownloadCamera(
+        [(fake_gphoto2_module.GP_EVENT_FILE_ADDED, _Ev("/store/DCIM", "DSC_0001.NEF"))]
+    )
+    assert cam.trigger_capture_one(camera, event_timeout=1.0) is True
+    assert camera.file_get_calls == []
+
+
+def test_download_failure_does_not_break_confirmation(tmp_path, fake_gphoto2_module):
+    import eclipse.camera as cam
+
+    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
+    camera = _DownloadCamera(
+        [(fake_gphoto2_module.GP_EVENT_FILE_ADDED, _Ev("/store/DCIM", "DSC_0001.NEF"))],
+        fail_get=True,
+    )
+    # A monitoring download is strictly optional -- losing it must never
+    # cost the frame it was monitoring.
+    assert cam.trigger_capture_one(camera, event_timeout=1.0, download_dir=tmp_path) is True

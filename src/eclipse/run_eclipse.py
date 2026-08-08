@@ -158,6 +158,52 @@ def unknown_download_phases(download_phases, known_labels) -> list[str]:
 TIME_CRITICAL_PHASES = frozenset({"totality", "diamond_ring_in", "diamond_ring_out"})
 
 
+def phase_window_end(start_time: dt.datetime, end_time: dt.datetime, plan: dict) -> dt.datetime:
+    """When a phase's useful window actually closes.
+
+    For brackets that's the scheduled end_time. For bursts it is NOT:
+    run_burst deliberately ignores end_time and runs for its full
+    duration_seconds so it straddles the contact moment, so its real
+    close is start + duration.
+
+    Used to skip phases that are already over — which matters if the
+    script is restarted mid-event (camera unplugged, focus tweak, USB
+    glitch). Brackets already self-skip via run_bracket_once's per-shot
+    check, but a burst would otherwise fire its full 15 seconds at the
+    wrong moment: restarting during totality would spend 15s of it
+    re-shooting the C2 diamond ring at 1/4000, long after the diamond
+    ring is over."""
+    if plan.get("mode") == "burst_single_exposure":
+        return start_time + dt.timedelta(seconds=plan.get("duration_seconds", 0))
+    return end_time
+
+
+def _connect_and_prepare(cfg: dict, dry_run: bool):
+    """connect() plus the per-session settings that don't survive a
+    reconnect. Factored out so a mid-event reconnect restores the camera
+    to exactly the same state as the initial connection — connect()
+    itself re-forces capturetarget, but image_quality is applied here and
+    would otherwise be silently lost on reconnect."""
+    camera = connect(
+        cfg.get("camera", {}).get("port"),
+        dry_run=dry_run,
+        capture_target=cfg.get("camera", {}).get("capture_target"),
+    )
+    image_quality = cfg.get("camera", {}).get("image_quality")
+    if image_quality:
+        try:
+            set_config(camera, "imagequality", image_quality)
+            log.info("Set image quality to %r", image_quality)
+        except Exception:
+            log.exception(
+                "Couldn't set image quality to %r — check it against "
+                "`eclipse-throughput --list-image-quality`; continuing with "
+                "whatever the camera is currently set to",
+                image_quality,
+            )
+    return camera
+
+
 def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
     schedule = build_schedule(cfg)
 
@@ -165,11 +211,11 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
     # applies, so that rung would silently shoot at base ISO — exactly
     # the kind of wrong-but-plausible result that's invisible in the logs
     # and unfixable after the fact.
-    for _, _, label, plan in schedule:
+    for name, plan in bp.all_plans().items():
         bad = unknown_iso_override_keys(plan)
         if bad:
             raise SystemExit(
-                f"{label}: iso_overrides keys {bad} don't match any of its "
+                f"{name}: iso_overrides keys {bad} don't match any of its "
                 f"shutter_speeds {plan.get('shutter_speeds')} — fix the typo in "
                 "bracket_plans.py (see camera.iso_for_step)."
             )
@@ -197,41 +243,36 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             sorted(download_phases & TIME_CRITICAL_PHASES),
         )
     monitor_dir = Path(cfg.get("output_dir", "./eclipse_frames")) / "monitor"
-    camera = connect(
-        cfg.get("camera", {}).get("port"),
-        dry_run=dry_run,
-        capture_target=cfg.get("camera", {}).get("capture_target"),
-    )
+    image_quality = cfg.get("camera", {}).get("image_quality")
+    if image_quality and is_raw_jpeg_combo_quality(image_quality):
+        raise SystemExit(
+            f"config.yaml's camera.image_quality={image_quality!r} is a "
+            "RAW+JPEG combo format. Confirmed directly on this project's "
+            "camera: each capture in combo mode fires two FILE_ADDED "
+            "events, but trigger_capture_one() consumes one per call — "
+            "run_bracket_once() cycling shutter speeds can silently "
+            "confirm a shot for the wrong speed (or none at all) with no "
+            "error. Use a single-format choice instead (plain NEF/RAW or "
+            "plain JPEG) — see `eclipse-throughput --list-image-quality`."
+        )
+
+    camera = _connect_and_prepare(cfg, dry_run)
 
     if focus_check:
         _run_startup_focus_check(camera, cfg, dry_run)
 
-    image_quality = cfg.get("camera", {}).get("image_quality")
-    if image_quality:
-        if is_raw_jpeg_combo_quality(image_quality):
-            raise SystemExit(
-                f"config.yaml's camera.image_quality={image_quality!r} is a "
-                "RAW+JPEG combo format. Confirmed directly on this project's "
-                "camera: each capture in combo mode fires two FILE_ADDED "
-                "events, but trigger_capture_one() consumes one per call — "
-                "run_bracket_once() cycling shutter speeds can silently "
-                "confirm a shot for the wrong speed (or none at all) with no "
-                "error. Use a single-format choice instead (plain NEF/RAW or "
-                "plain JPEG) — see `eclipse-throughput --list-image-quality`."
-            )
-        try:
-            set_config(camera, "imagequality", image_quality)
-            log.info("Set image quality to %r", image_quality)
-        except Exception:
-            log.exception(
-                "Couldn't set image quality to %r — check it against "
-                "`eclipse-throughput --list-image-quality`; continuing with "
-                "whatever the camera is currently set to",
-                image_quality,
-            )
-
     for start_time, end_time, label, plan in schedule:
         now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+        window_end = phase_window_end(start_time, end_time, plan)
+        if now >= window_end:
+            log.warning(
+                "Skipping %s — its window closed %.0fs ago (restarted mid-event?)",
+                label,
+                (now - window_end).total_seconds(),
+            )
+            continue
+
         wait = (start_time - now).total_seconds()
         suffix = _local_suffix(start_time, tz)
         if wait > 0:
@@ -245,17 +286,32 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             )
 
         log.info("Firing %s%s", label, suffix)
+        kwargs = {
+            "end_time": end_time,
+            "overhead": cfg.get("camera", {}).get("bracket_overhead"),
+            "timeout_margin": cfg.get("camera", {}).get("bracket_timeout_margin"),
+            "download_dir": (monitor_dir if label in download_phases else None),
+        }
         try:
-            run_sequence(
-                camera,
-                plan,
-                end_time=end_time,
-                overhead=cfg.get("camera", {}).get("bracket_overhead"),
-                timeout_margin=cfg.get("camera", {}).get("bracket_timeout_margin"),
-                download_dir=(monitor_dir if label in download_phases else None),
-            )
+            run_sequence(camera, plan, **kwargs)
         except Exception:
-            log.exception("Error during %s — continuing to next event", label)
+            # A dead camera object stays dead — without reconnecting here,
+            # every remaining phase would fail identically while the script
+            # appears to still be running. Rebind `camera` so later phases
+            # use the live object, then retry this phase: its end_time is
+            # unchanged, so if the window has since closed the per-shot
+            # check simply fires nothing.
+            log.exception("Error during %s — attempting to reconnect", label)
+            try:
+                camera = _connect_and_prepare(cfg, dry_run)
+                log.info("Reconnected; retrying %s", label)
+                run_sequence(camera, plan, **kwargs)
+            except Exception:
+                log.exception(
+                    "Reconnect/retry failed for %s — continuing to next event "
+                    "(check the USB cable; the schedule keeps running)",
+                    label,
+                )
 
 
 def main():

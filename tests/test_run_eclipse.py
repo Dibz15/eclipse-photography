@@ -9,6 +9,7 @@ from eclipse.run_eclipse import (
     DEEP_CRESCENT_LEAD,
     TIME_CRITICAL_PHASES,
     build_schedule,
+    phase_window_end,
     run,
     unknown_download_phases,
 )
@@ -210,3 +211,44 @@ def test_schedule_identical_across_os_timezones():
         else:
             os.environ["TZ"] = original
         time.tzset()
+
+
+# --------------------------------------------------------------------------
+# phase_window_end: when a phase's useful window really closes. Bursts
+# overrun their scheduled end_time deliberately, so they need special
+# handling -- without it, a mid-event restart re-fires a full 15s diamond
+# ring burst long after the diamond ring is over, burning totality.
+# --------------------------------------------------------------------------
+
+def test_phase_window_end_for_bracket_is_the_scheduled_end():
+    start = dt.datetime(2026, 8, 12, 18, 0, 0)
+    end = start + dt.timedelta(seconds=90)
+    assert phase_window_end(start, end, {"shutter_speeds": ["1/2000"]}) == end
+
+
+def test_phase_window_end_for_burst_accounts_for_overrun():
+    start = dt.datetime(2026, 8, 12, 18, 0, 0)
+    end = start + dt.timedelta(seconds=8)  # scheduled end
+    plan = {"mode": "burst_single_exposure", "duration_seconds": 15}
+    # run_burst ignores end_time and runs its full duration, so the real
+    # close is 15s after the start, not the scheduled 8s.
+    assert phase_window_end(start, end, plan) == start + dt.timedelta(seconds=15)
+
+
+def test_phase_window_end_burst_without_duration_does_not_crash():
+    start = dt.datetime(2026, 8, 12, 18, 0, 0)
+    plan = {"mode": "burst_single_exposure"}
+    assert phase_window_end(start, start, plan) == start
+
+
+def test_diamond_ring_window_extends_past_c2():
+    # Regression: restarting during totality must not re-fire the C2
+    # diamond ring. Its window has to be seen as closing after C2, so a
+    # restart past that point skips it.
+    schedule = build_schedule(CFG)
+    start, end, _, plan = next(s for s in schedule if s[2] == "diamond_ring_in")
+    c2 = dt.datetime.strptime(f"{CFG['date']} {CFG['timings_utc']['C2']}", "%Y-%m-%d %H:%M:%S")
+    window_end = phase_window_end(start, end, plan)
+    assert window_end > c2
+    # 30s into totality the burst is well past -- must be skipped, not fired.
+    assert c2 + dt.timedelta(seconds=30) >= window_end

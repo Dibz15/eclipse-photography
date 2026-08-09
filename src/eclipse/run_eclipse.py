@@ -27,6 +27,7 @@ from . import bracket_plans as bp
 from .camera import (
     connect,
     is_raw_jpeg_combo_quality,
+    release,
     run_sequence,
     set_config,
     unknown_iso_override_keys,
@@ -256,6 +257,18 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             "plain JPEG) — see `eclipse-throughput --list-image-quality`."
         )
 
+    log.info("Schedule (%d phases):", len(schedule))
+    for start_time, end_time, label, plan in schedule:
+        seconds = (phase_window_end(start_time, end_time, plan) - start_time).total_seconds()
+        log.info(
+            "  %-28s %s%s  %6.0fs%s",
+            label,
+            start_time.strftime("%H:%M:%S"),
+            _local_suffix(start_time, tz),
+            seconds,
+            "   (ZERO-LENGTH — will be skipped)" if seconds <= 0 else "",
+        )
+
     camera = _connect_and_prepare(cfg, dry_run)
 
     if focus_check:
@@ -266,11 +279,22 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
 
         window_end = phase_window_end(start_time, end_time, plan)
         if now >= window_end:
-            log.warning(
-                "Skipping %s — its window closed %.0fs ago (restarted mid-event?)",
-                label,
-                (now - window_end).total_seconds(),
-            )
+            if start_time >= window_end:
+                # Structural, not a timing miss: the phase was allocated no
+                # window at all. Happens when DEEP_CRESCENT_LEAD is longer
+                # than the partial phase it sits inside, which is normal in
+                # a compressed rehearsal and impossible on eclipse day.
+                log.warning(
+                    "Skipping %s — it has a zero-length window in this schedule "
+                    "(nothing was lost at runtime; see the schedule summary above)",
+                    label,
+                )
+            else:
+                log.warning(
+                    "Skipping %s — its window closed %.0fs ago (restarted mid-event?)",
+                    label,
+                    (now - window_end).total_seconds(),
+                )
             continue
 
         wait = (start_time - now).total_seconds()
@@ -303,6 +327,10 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             # check simply fires nothing.
             log.exception("Error during %s — attempting to reconnect", label)
             try:
+                # Release first: the dead object still holds the USB claim,
+                # and connect() would otherwise fail with [-53] Could not
+                # claim the USB device.
+                release(camera)
                 camera = _connect_and_prepare(cfg, dry_run)
                 log.info("Reconnected; retrying %s", label)
                 run_sequence(camera, plan, **kwargs)

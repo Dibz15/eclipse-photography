@@ -123,7 +123,7 @@ totality_bracket = {
     # Slow rungs only — see camera.iso_for_step. Keys must match
     # shutter_speeds exactly; run_eclipse.py refuses to start otherwise,
     # since a typo here would silently shoot that rung at base ISO.
-    "iso_overrides": {"1": 320, "2": 500, "4": 500},
+    "iso_overrides": {"1": 320, "2": 500},
     "aperture": "f/11",
     # Alternate direction each pass (forward, reverse, forward...). At the
     # seam this puts the two slowest exposures back to back — ideal for

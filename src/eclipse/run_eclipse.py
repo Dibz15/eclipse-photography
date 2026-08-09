@@ -192,6 +192,63 @@ def phase_window_end(start_time: dt.datetime, end_time: dt.datetime, plan: dict)
     return end_time
 
 
+# How long to keep retrying a reconnect, when the current phase's own
+# window allows it. Sized for a human: unplugging and replugging a cable,
+# plus USB re-enumeration, takes several seconds — a single immediate
+# attempt will essentially always fail because the device isn't back yet.
+# How many times to retry a single phase (each retry preceded by a
+# reconnect) before giving up and moving on. Bounded so an instantly
+# failing camera can't spin, but high enough to survive several
+# unplug/replug cycles inside one long partial phase.
+MAX_PHASE_ATTEMPTS = 5
+
+RECONNECT_MAX_SECONDS = 45.0
+RECONNECT_INITIAL_DELAY = 1.0
+RECONNECT_MAX_DELAY = 5.0
+
+
+def _reconnect_with_retries(cfg: dict, dry_run: bool, deadline: dt.datetime):
+    """Retry _connect_and_prepare with backoff until `deadline`.
+
+    A single immediate attempt is nearly useless: the original failure and
+    the retry land milliseconds apart, long before a replugged camera has
+    re-enumerated. Backing off gives the device (and the person holding
+    the cable) time to come back.
+
+    `deadline` is normally bounded by the current phase's own window, so
+    a long partial phase can afford to keep trying while totality gives up
+    quickly and moves on rather than burning irreplaceable seconds."""
+    delay = RECONNECT_INITIAL_DELAY
+    attempt = 0
+    last_error: Exception | None = None
+    while True:
+        attempt += 1
+        try:
+            return _connect_and_prepare(cfg, dry_run)
+        except Exception as e:  # noqa: BLE001 - retried below, re-raised on timeout
+            last_error = e
+            remaining = (deadline - dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
+            remaining_s = remaining.total_seconds()
+            if remaining_s <= 0:
+                break
+            wait = min(delay, remaining_s)
+            log.info(
+                "Reconnect attempt %d failed (%s); retrying in %.1fs "
+                "(%.0fs of retry budget left)",
+                attempt,
+                e,
+                wait,
+                remaining_s,
+            )
+            time.sleep(wait)
+            delay = min(delay * 2, RECONNECT_MAX_DELAY)
+    raise RuntimeError(
+        f"Reconnect failed after {attempt} attempts. Check the USB cable. "
+        "On macOS a replugged camera is often grabbed by the system PTP "
+        "daemon — `killall PTPCamera` frees it."
+    ) from last_error
+
+
 def _connect_and_prepare(cfg: dict, dry_run: bool):
     """connect() plus the per-session settings that don't survive a
     reconnect. Factored out so a mid-event reconnect restores the camera
@@ -330,30 +387,56 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             "timeout_margin": cfg.get("camera", {}).get("bracket_timeout_margin"),
             "download_dir": (monitor_dir if label in download_phases else None),
         }
-        try:
-            run_sequence(camera, plan, **kwargs)
-        except Exception:
-            # A dead camera object stays dead — without reconnecting here,
-            # every remaining phase would fail identically while the script
-            # appears to still be running. Rebind `camera` so later phases
-            # use the live object, then retry this phase: its end_time is
-            # unchanged, so if the window has since closed the per-shot
-            # check simply fires nothing.
-            log.exception("Error during %s — attempting to reconnect", label)
+        # Keep retrying this phase for as long as its window lasts. A
+        # single reconnect isn't enough: an interval-based bracket can
+        # succeed, sleep 30s, then hit a still-dead camera on its next
+        # pass, and one-shot recovery would abandon the whole phase there.
+        for attempt in range(1, MAX_PHASE_ATTEMPTS + 1):
             try:
-                # Release first: the dead object still holds the USB claim,
-                # and connect() would otherwise fail with [-53] Could not
-                # claim the USB device.
-                release(camera)
-                camera = _connect_and_prepare(cfg, dry_run)
-                log.info("Reconnected; retrying %s", label)
-                run_sequence(camera, plan, **kwargs)
+                run_sequence(camera, plan, hard_stop=window_end, **kwargs)
+                break
             except Exception:
+                now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                if now >= window_end:
+                    log.exception(
+                        "Error during %s and its window has closed — moving on", label
+                    )
+                    break
+                if attempt == MAX_PHASE_ATTEMPTS:
+                    log.exception(
+                        "Error during %s — giving up after %d attempts, continuing "
+                        "to next event (the schedule keeps running, and the next "
+                        "phase will try to reconnect again)",
+                        label,
+                        attempt,
+                    )
+                    break
                 log.exception(
-                    "Reconnect/retry failed for %s — continuing to next event "
-                    "(check the USB cable; the schedule keeps running)",
+                    "Error during %s (attempt %d/%d) — attempting to reconnect",
                     label,
+                    attempt,
+                    MAX_PHASE_ATTEMPTS,
                 )
+                try:
+                    # Release first: the dead object still holds the USB
+                    # claim, and connect() would otherwise fail with [-53]
+                    # Could not claim the USB device.
+                    release(camera)
+                    # Never retry past this phase's own window — a long
+                    # partial phase can wait, totality cannot.
+                    deadline = min(
+                        window_end,
+                        now + dt.timedelta(seconds=RECONNECT_MAX_SECONDS),
+                    )
+                    camera = _reconnect_with_retries(cfg, dry_run, deadline)
+                    log.info("Reconnected; retrying %s", label)
+                except Exception:
+                    log.exception(
+                        "Reconnect failed for %s — continuing to next event "
+                        "(the next phase will try again)",
+                        label,
+                    )
+                    break
 
 
 def main():

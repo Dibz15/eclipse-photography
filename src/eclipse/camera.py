@@ -11,11 +11,16 @@ libgphoto2 installed, e.g. this dev laptop before you've brewed it.
 from __future__ import annotations
 
 import datetime as dt
+import gc
 import logging
 import time
 from pathlib import Path
 
 log = logging.getLogger("eclipse.camera")
+
+# A burst is only reported as truncated if it loses more than this many
+# seconds — below it, the difference is clock granularity, not lateness.
+BURST_TRUNCATE_TOLERANCE = 0.5
 
 
 # --------------------------------------------------------------------------
@@ -30,8 +35,34 @@ class _DryRunNode:
     def set_value(self, value):
         log.info("[dry-run] set %s = %s", self.name, value)
 
+    def get_name(self):
+        return self.name
+
+    def count_children(self):
+        return 0
+
+    def get_choices(self):
+        return []
+
 
 class _DryRunConfig:
+    """Mimics a real gphoto2 config tree, including the walkable
+    children that list_config_names()/find_config_name() need. Uses the
+    NIKON node names ('f-number', not 'aperture') so a dry run exercises
+    the same discovery path as the real camera — getting this wrong once
+    already broke --dry-run silently."""
+
+    _LEAF_NAMES = ("iso", "shutterspeed", "f-number", "imagequality", "capturetarget")
+
+    def get_name(self):
+        return "main"
+
+    def count_children(self):
+        return len(self._LEAF_NAMES)
+
+    def get_child(self, index: int):
+        return _DryRunNode(self._LEAF_NAMES[index])
+
     def get_child_by_name(self, name: str):
         return _DryRunNode(name)
 
@@ -99,6 +130,10 @@ def release(camera) -> None:
         camera.exit()
     except Exception:
         log.debug("camera.exit() failed while releasing (already dead?)", exc_info=True)
+    # Drop any lingering CameraWidget/Camera references so libgphoto2
+    # finalises the underlying object and frees the USB claim. Without
+    # this a reconnect can still hit [-53] Could not claim the USB device.
+    gc.collect()
 
 
 def connect(
@@ -445,7 +480,7 @@ def unknown_iso_override_keys(plan: dict) -> list[str]:
     return sorted(k for k in overrides if k not in speeds)
 
 
-def run_burst(camera, plan: dict) -> int:
+def run_burst(camera, plan: dict, hard_stop: dt.datetime | None = None) -> int:
     """diamond_ring_burst-style plan: fixed exposure, for
     plan['duration_seconds']. Uses trigger_capture_one() rather than
     capture_one() — confirmed meaningfully faster for this fixed-exposure
@@ -462,6 +497,26 @@ def run_burst(camera, plan: dict) -> int:
     set_config(camera, "shutterspeed", plan["shutter_speed"])
 
     end = time.monotonic() + plan["duration_seconds"]
+    if hard_stop is not None:
+        # A burst normally runs its full duration regardless of end_time,
+        # so it straddles the contact moment. But if it STARTED late — a
+        # reconnect after an unplug, say — running the full duration
+        # pushes it into the next phase, and for diamond_ring_in that
+        # next phase is totality. Clamp to the window it was meant to
+        # occupy rather than stealing time it was never allocated.
+        remaining = (hard_stop - _utcnow()).total_seconds()
+        clamped = time.monotonic() + remaining
+        # Tolerance so an on-time burst — where `remaining` is a hair under
+        # duration_seconds purely from clock granularity — doesn't log a
+        # no-op truncation. Only a genuinely late start should warn.
+        if clamped < end - BURST_TRUNCATE_TOLERANCE:
+            log.warning(
+                "Burst starting late — truncating to %.1fs to avoid overrunning "
+                "its window (would have run %.1fs)",
+                max(remaining, 0.0),
+                plan["duration_seconds"],
+            )
+            end = clamped
     attempted = 0
     confirmed = 0
     while time.monotonic() < end:
@@ -590,6 +645,7 @@ def run_sequence(
     overhead: float | None = None,
     timeout_margin: float | None = None,
     download_dir: Path | None = None,
+    hard_stop: dt.datetime | None = None,
 ):
     """Dispatches on the plan's shape (see bracket_plans.py):
 
@@ -597,7 +653,8 @@ def run_sequence(
       plan['duration_seconds']. Deliberately ignores end_time — the
       burst's whole job is to straddle the contact moment, so its
       duration is fixed by the plan, and the schedule accounts for the
-      overrun.
+      overrun. `hard_stop` still bounds it, so a burst delayed by a
+      reconnect truncates rather than eating the following phase.
     - "interval_seconds" present: run one bracket, sleep the interval,
       repeat until end_time (or once, if end_time is None).
     - anything else (e.g. "repeat_until", like totality_bracket): loop the
@@ -620,7 +677,7 @@ def run_sequence(
     too tight to spend on anything optional.
     """
     if plan.get("mode") == "burst_single_exposure":
-        run_burst(camera, plan)
+        run_burst(camera, plan, hard_stop=hard_stop)
         return
 
     palindrome = plan.get("palindrome", False)

@@ -1,4 +1,6 @@
+import datetime as dt
 import sys
+import time
 import types
 
 import pytest
@@ -13,6 +15,8 @@ from eclipse.camera import (
     list_config_names,
     pick_card_choice,
     release,
+    run_bracket_once,
+    run_burst,
     shutter_speed_seconds,
     trigger_capture_one,
     unknown_iso_override_keys,
@@ -442,31 +446,31 @@ class _Ev:
         self.folder, self.name = folder, name
 
 
-def test_download_preview_writes_file(tmp_path, fake_gphoto2_module):
+def test_download_frame_writes_file(tmp_path, fake_gphoto2_module):
     import eclipse.camera as cam
 
-    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
+    fake_gphoto2_module.GP_FILE_TYPE_NORMAL = "normal"
     camera = _DownloadCamera([])
-    out = cam.download_preview(camera, "/store/DCIM", "DSC_0645.NEF", tmp_path)
+    out = cam.download_frame(camera, "/store/DCIM", "DSC_0645.NEF", tmp_path)
     assert out is not None and out.exists()
-    assert out.name == "DSC_0645_preview.jpg"
-    # Must request the PREVIEW, not the full file -- the point is speed and
-    # a PIL-readable JPEG rather than a 25MB NEF.
-    assert camera.file_get_calls[0][2] == "preview"
+    assert out.name == "DSC_0645.NEF"
+    # Must request the FULL file: the camera's preview is a 160x120
+    # thumbnail, useless for judging focus.
+    assert camera.file_get_calls[0][2] == "normal"
 
 
-def test_download_preview_never_raises_on_failure(tmp_path, fake_gphoto2_module):
+def test_download_frame_never_raises_on_failure(tmp_path, fake_gphoto2_module):
     import eclipse.camera as cam
 
-    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
-    assert cam.download_preview(_DownloadCamera([], fail_get=True), "f", "n.NEF", tmp_path) is None
-    assert cam.download_preview(_DownloadCamera([], fail_save=True), "f", "n.NEF", tmp_path) is None
+    fake_gphoto2_module.GP_FILE_TYPE_NORMAL = "normal"
+    assert cam.download_frame(_DownloadCamera([], fail_get=True), "f", "n.NEF", tmp_path) is None
+    assert cam.download_frame(_DownloadCamera([], fail_save=True), "f", "n.NEF", tmp_path) is None
 
 
 def test_trigger_capture_one_downloads_when_dir_given(tmp_path, fake_gphoto2_module):
     import eclipse.camera as cam
 
-    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
+    fake_gphoto2_module.GP_FILE_TYPE_NORMAL = "normal"
     camera = _DownloadCamera(
         [(fake_gphoto2_module.GP_EVENT_FILE_ADDED, _Ev("/store/DCIM", "DSC_0001.NEF"))]
     )
@@ -487,7 +491,7 @@ def test_trigger_capture_one_skips_download_by_default(fake_gphoto2_module):
 def test_download_failure_does_not_break_confirmation(tmp_path, fake_gphoto2_module):
     import eclipse.camera as cam
 
-    fake_gphoto2_module.GP_FILE_TYPE_PREVIEW = "preview"
+    fake_gphoto2_module.GP_FILE_TYPE_NORMAL = "normal"
     camera = _DownloadCamera(
         [(fake_gphoto2_module.GP_EVENT_FILE_ADDED, _Ev("/store/DCIM", "DSC_0001.NEF"))],
         fail_get=True,
@@ -614,3 +618,100 @@ def test_release_calls_exit_when_healthy():
 
     release(Live())
     assert Live.called
+
+
+# --------------------------------------------------------------------------
+# DryRunCamera must support the SAME config-tree API as a real camera.
+# Regression: adding aperture-name discovery broke --dry-run entirely,
+# because _DryRunConfig had no count_children/get_child to walk. No test
+# caught it -- the bracket tests using DryRunCamera had no "aperture" key
+# in their plans, so they never reached the discovery path.
+# --------------------------------------------------------------------------
+
+def test_dry_run_config_is_walkable():
+    names = list_config_names(DryRunCamera())
+    assert "iso" in names
+    assert "shutterspeed" in names
+
+
+def test_dry_run_resolves_the_nikon_aperture_name():
+    # Dry run must exercise the same discovery path as the real body.
+    assert find_config_name(DryRunCamera(), APERTURE_NAMES) == "f-number"
+
+
+def test_dry_run_bracket_with_aperture_succeeds():
+    confirmed, attempted, skipped = run_bracket_once(
+        DryRunCamera(), {"shutter_speeds": ["1/500", "1/8"], "iso": 200, "aperture": "f/11"}
+    )
+    assert (confirmed, attempted, skipped) == (2, 2, 0)
+
+
+def test_dry_run_burst_with_aperture_succeeds():
+    n = run_burst(
+        DryRunCamera(),
+        {
+            "mode": "burst_single_exposure",
+            "shutter_speed": "1/4000",
+            "iso": 100,
+            "aperture": "f/11",
+            "duration_seconds": 0.5,
+        },
+    )
+    assert n >= 1
+
+
+def test_verify_required_config_nodes_passes_for_dry_run():
+    verify_required_config_nodes(DryRunCamera())  # must not raise
+
+
+# --------------------------------------------------------------------------
+# Burst truncation. run_burst normally ignores end_time so it straddles the
+# contact moment -- but a burst delayed by a reconnect must not run its full
+# duration into the next phase. Regression: a reconnect pushed
+# diamond_ring_in 8s late and it ran 14s into totality.
+# --------------------------------------------------------------------------
+
+BURST = {
+    "mode": "burst_single_exposure",
+    "shutter_speed": "1/4000",
+    "iso": 100,
+    "aperture": "f/11",
+    "duration_seconds": 3,
+}
+
+
+def test_burst_runs_full_duration_when_on_time():
+    import eclipse.camera as cam
+
+    started = time.monotonic()
+    cam.run_burst(DryRunCamera(), BURST, hard_stop=cam._utcnow() + dt.timedelta(seconds=3))
+    assert time.monotonic() - started == pytest.approx(3.0, abs=0.6)
+
+
+def test_burst_truncates_when_started_late():
+    import eclipse.camera as cam
+
+    started = time.monotonic()
+    # Only 1s of the window remains, though the plan asks for 3s.
+    cam.run_burst(DryRunCamera(), BURST, hard_stop=cam._utcnow() + dt.timedelta(seconds=1))
+    elapsed = time.monotonic() - started
+    assert elapsed == pytest.approx(1.0, abs=0.6)
+    assert elapsed < 3.0
+
+
+def test_burst_with_no_hard_stop_runs_full_duration():
+    import eclipse.camera as cam
+
+    started = time.monotonic()
+    cam.run_burst(DryRunCamera(), BURST)
+    assert time.monotonic() - started == pytest.approx(3.0, abs=0.6)
+
+
+def test_burst_hard_stop_already_passed_fires_nothing_extra():
+    import eclipse.camera as cam
+
+    started = time.monotonic()
+    n = cam.run_burst(DryRunCamera(), BURST, hard_stop=cam._utcnow() - dt.timedelta(seconds=5))
+    # Returns promptly rather than running the full 3s.
+    assert time.monotonic() - started < 1.0
+    assert n >= 0

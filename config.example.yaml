@@ -27,13 +27,41 @@ camera:
                           # choice on your camera; run
                           # `uv run eclipse-throughput --list-capture-target`
                           # to see the raw choices.
-  bracket_overhead: null  # per-shot processing/confirmation overhead (seconds)
-                          # trim_to_fit() adds to each kept shutter speed's own
-                          # exposure time, to estimate whether totality_bracket
-                          # fits a short totality. Built-in default (1.3s) was
-                          # measured on one specific camera/card/cable -- run
+  bracket_overhead: null  # AVERAGE per-shot overhead (seconds) added to each
+                          # shutter speed's own exposure time to ESTIMATE how
+                          # long shots and passes take -- drives trim_to_fit()'s
+                          # ladder trimming and run_bracket_once()'s per-shot
+                          # "does this still fit?" check.
+  bracket_timeout_margin: null  # MAX per-shot overhead + safety (seconds), used
+                          # to size each shot's event_timeout -- i.e. when to give
+                          # up on a shot. Deliberately a different (larger) value
+                          # than bracket_overhead above: too low and slow but
+                          # working exposures get recorded as failures.
+                          #
+                          # Both default to camera.py's DEFAULT_BRACKET_* values,
+                          # measured on one specific camera/card/cable. Run
                           # `uv run eclipse-throughput --bracket-test --write`
-                          # to calibrate this against your actual gear instead.
+                          # to calibrate both against your actual gear.
+  download_phases: []     # phase labels whose frames should be downloaded in
+                          # FULL to <output_dir>/monitor/ -- for spotting focus
+                          # drift or lens fogging mid-event without the LCD
+                          # (which is dark while tethered). Full files, not the
+                          # camera's 160x120 preview thumbnail, which is far too
+                          # small to judge focus. The card copy is untouched;
+                          # this is a monitoring copy on top of it. Expect a few
+                          # seconds and ~25MB per NEF, which the partial phases'
+                          # 300s interval absorbs comfortably. Logged with a
+                          # sharpness score where the format can be decoded
+                          # (JPEG yes, NEF no -- use eclipse-focus-check for a
+                          # number when shooting RAW).
+                          # Sensible: ["partial_pre_totality",
+                          #            "partial_post_totality"]
+                          # Valid labels: partial_pre_totality,
+                          #   deep_crescent_pre_totality, diamond_ring_in,
+                          #   totality, diamond_ring_out,
+                          #   deep_crescent_post_totality, partial_post_totality
+                          # Don't add the time-critical ones (totality, either
+                          # diamond ring) -- downloads cost window time.
 
 output_dir: "./eclipse_frames"
 

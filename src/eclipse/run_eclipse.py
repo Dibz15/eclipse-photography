@@ -156,7 +156,20 @@ def unknown_download_phases(download_phases, known_labels) -> list[str]:
     return sorted(set(download_phases or []) - set(known_labels))
 
 
-TIME_CRITICAL_PHASES = frozenset({"totality", "diamond_ring_in", "diamond_ring_out"})
+# Phases where a monitoring download costs window time that can't be
+# recovered. The bursts and totality are obvious; the deep-crescent
+# phases are included because their 30s interval is comparable to the
+# time a full-file bracket download takes, so enabling downloads there
+# can push a pass past its own window.
+TIME_CRITICAL_PHASES = frozenset(
+    {
+        "totality",
+        "diamond_ring_in",
+        "diamond_ring_out",
+        "deep_crescent_pre_totality",
+        "deep_crescent_post_totality",
+    }
+)
 
 
 def phase_window_end(start_time: dt.datetime, end_time: dt.datetime, plan: dict) -> dt.datetime:
@@ -238,9 +251,10 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
         )
     if download_phases & TIME_CRITICAL_PHASES:
         log.warning(
-            "download_phases includes a time-critical phase %s — each download "
-            "costs window time that can't be recovered. This is allowed but "
-            "rarely what you want.",
+            "download_phases includes a time-critical phase %s — full-file "
+            "downloads take seconds each and cost window time that can't be "
+            "recovered. This is allowed but rarely what you want; the partial "
+            "phases have 300s intervals and are the intended place for it.",
             sorted(download_phases & TIME_CRITICAL_PHASES),
         )
     monitor_dir = Path(cfg.get("output_dir", "./eclipse_frames")) / "monitor"

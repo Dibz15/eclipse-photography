@@ -34,6 +34,7 @@ from .camera import (
     set_config,
     unknown_iso_override_keys,
 )
+from .cues import build_cue_schedule, start_cue_thread
 from .tzutil import resolve_tz
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
@@ -172,6 +173,13 @@ TIME_CRITICAL_PHASES = frozenset(
         "deep_crescent_post_totality",
     }
 )
+
+
+def contact_times(cfg: dict) -> dict[str, dt.datetime]:
+    """C1/C2/max/C3/C4 as naive-UTC datetimes — what audio cue offsets
+    are measured from."""
+    t = cfg["timings_utc"]
+    return {k: to_dt(cfg["date"], t[k]) for k in ("C1", "C2", "max", "C3", "C4") if k in t}
 
 
 def phase_window_end(start_time: dt.datetime, end_time: dt.datetime, plan: dict) -> dt.datetime:
@@ -346,6 +354,17 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             "plain JPEG) — see `eclipse-throughput --list-image-quality`."
         )
 
+    # Validate cues before anything else starts: a typo'd offset should
+    # fail now, not silently never fire.
+    audio = cfg.get("audio_cues") or {}
+    contacts = contact_times(cfg)
+    cue_specs = audio.get("cues") or []
+    if cue_specs:
+        try:
+            build_cue_schedule(cue_specs, contacts)
+        except ValueError as e:
+            raise SystemExit(f"config.yaml audio_cues: {e}") from e
+
     log.info("Schedule (%d phases):", len(schedule))
     for start_time, end_time, label, plan in schedule:
         seconds = (phase_window_end(start_time, end_time, plan) - start_time).total_seconds()
@@ -357,6 +376,9 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             seconds,
             "   (ZERO-LENGTH — will be skipped)" if seconds <= 0 else "",
         )
+
+    if cue_specs and audio.get("enabled", True):
+        start_cue_thread(cue_specs, contacts, voice=audio.get("voice"))
 
     camera = _connect_and_prepare(cfg, dry_run)
 

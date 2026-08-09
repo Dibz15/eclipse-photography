@@ -74,6 +74,40 @@ camera:
                           # Don't add the time-critical ones (totality, either
                           # diamond ring) -- downloads cost window time.
 
+# Spoken cues for the things you still do by hand. Times are relative to
+# a contact: "C2-300" is five minutes before C2, "C3+2" two seconds after
+# C3. Runs on an isolated daemon thread -- a cue failing can never affect
+# capture. macOS uses the built-in `say`; espeak is used if present;
+# otherwise the terminal bell.
+#
+# countdown_from: N speaks "N... N-1... 1" so the message lands ON the
+# time, for cues that need a couple of seconds' precision. Max 10.
+#
+# The framing cue matters because on a fixed tripod the sun drifts ~509 px
+# during a 96s totality (~400 px down, ~310 px across at 300mm). Framing
+# it centred at C2 leaves it well off-centre by C3, so offset it upstream
+# beforehand and let it drift through the middle.
+audio_cues:
+  enabled: true
+  voice: null             # macOS `say` voice name, e.g. "Daniel"; null = default
+  cues:
+    - at: "C2-600"
+      say: "Ten minutes. Check focus."
+    - at: "C2-240"
+      say: "Four minutes. Frame sun in top corner."
+    - at: "C2-60"
+      say: "One minute. Last look. Hands off."
+    - at: "C2-20"
+      say: "Filter off."
+      countdown_from: 5
+    - at: "C2"
+      say: "Totality."
+    - at: "C3-15"
+      say: "Fifteen seconds left. Get ready to add filter."
+    - at: "C3+10"
+      say: "Filter back on."
+      countdown_from: 3
+
 output_dir: "./eclipse_frames"
 
 # Filled in by `uv run eclipse-focus-check --calibrate` -- see that

@@ -708,14 +708,20 @@ def test_burst_with_no_hard_stop_runs_full_duration():
     assert time.monotonic() - started == pytest.approx(3.0, abs=0.6)
 
 
-def test_burst_hard_stop_already_passed_fires_nothing_extra():
+def test_burst_hard_stop_already_passed_skips_cleanly(caplog):
+    import logging
+
     import eclipse.camera as cam
 
     started = time.monotonic()
-    n = cam.run_burst(DryRunCamera(), BURST, hard_stop=cam._utcnow() - dt.timedelta(seconds=5))
-    # Returns promptly rather than running the full 3s.
+    with caplog.at_level(logging.WARNING):
+        n = cam.run_burst(DryRunCamera(), BURST, hard_stop=cam._utcnow() - dt.timedelta(seconds=5))
+    assert n == 0
     assert time.monotonic() - started < 1.0
-    assert n >= 0
+    # Reported as a skipped window, not a "complete" burst of zero frames --
+    # this happens after a reconnect eats the window, and at that moment the
+    # log needs to be unambiguous.
+    assert "window already closed" in caplog.text
 
 
 # --------------------------------------------------------------------------

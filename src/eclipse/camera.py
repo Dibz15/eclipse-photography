@@ -621,6 +621,16 @@ def run_burst(camera, plan: dict, hard_stop: dt.datetime | None = None) -> int:
         # next phase is totality. Clamp to the window it was meant to
         # occupy rather than stealing time it was never allocated.
         remaining = (hard_stop - _utcnow()).total_seconds()
+        if remaining <= 0:
+            # Nothing left of the window — usually because a reconnect ate
+            # it. Say so plainly rather than reporting a "complete" burst
+            # of zero frames, which reads like a capture failure.
+            log.warning(
+                "Burst window already closed (recovering took %.0fs too long) — "
+                "skipping so the next phase starts on time",
+                -remaining,
+            )
+            return 0
         clamped = time.monotonic() + remaining
         # Tolerance so an on-time burst — where `remaining` is a hair under
         # duration_seconds purely from clock granularity — doesn't log a

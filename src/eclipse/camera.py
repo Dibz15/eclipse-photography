@@ -62,10 +62,44 @@ class DryRunCamera:
     def wait_for_event(self, timeout_ms):
         log.info("[dry-run] wait_for_event(%d)", timeout_ms)
 
+    def exit(self):
+        log.info("[dry-run] exit()")
+
 
 # --------------------------------------------------------------------------
 # Real camera
 # --------------------------------------------------------------------------
+
+def verify_required_config_nodes(camera) -> None:
+    """Confirm the config nodes every bracket depends on actually exist,
+    at connect time rather than at the first capture.
+
+    Learned the hard way: 'aperture' doesn't exist on this Nikon (it's
+    'f-number'), and the failure surfaced as a bare [-2] Bad parameters
+    midway through the first bracket of a rehearsal. Checking up front
+    turns that into a clear message before anything is scheduled."""
+    available = set(list_config_names(camera))
+    missing = [n for n in ("iso", "shutterspeed") if n not in available]
+    if resolve_aperture_name(camera) is None:
+        missing.append(f"aperture (tried {list(APERTURE_NAMES)})")
+    if missing:
+        raise RuntimeError(
+            f"Camera is missing required config node(s): {missing}. "
+            f"Available nodes: {sorted(available)}"
+        )
+
+
+def release(camera) -> None:
+    """Drop the camera's USB claim. Must be called before reconnecting to
+    the same body: a dead-but-unreleased camera object keeps the claim,
+    and the new connect() then fails with [-53] Could not claim the USB
+    device. Never raises — the object may already be in a bad state, and
+    the whole point of calling this is that we're recovering."""
+    try:
+        camera.exit()
+    except Exception:
+        log.debug("camera.exit() failed while releasing (already dead?)", exc_info=True)
+
 
 def connect(
     port: str | None = None,
@@ -90,18 +124,57 @@ def connect(
             log.warning(
                 "Couldn't select port %s explicitly, falling back to auto-detect", port
             )
-    try:
-        camera.init()
-    except gp.GPhoto2Error as e:
-        log.error("Couldn't connect to camera, is it plugged in?")
-        raise RuntimeError("Couldn't connect to camera") from e
-        
+    camera.init()
     log.info("Connected to camera%s", f" on {port}" if port else " (auto-detected)")
 
     if enforce_capture_target:
+        verify_required_config_nodes(camera)
         _force_capture_target_to_card(camera, override=capture_target)
 
     return camera
+
+
+def list_config_names(camera) -> list[str]:
+    """Every settable leaf node name the camera exposes. Used for
+    discovery and for error messages — when a name we expect is missing,
+    showing what IS available beats a bare 'Bad parameters'."""
+
+    def walk(node):
+        n = node.count_children()
+        if n == 0:
+            yield node.get_name()
+            return
+        for i in range(n):
+            yield from walk(node.get_child(i))
+
+    return sorted(walk(camera.get_config()))
+
+
+def find_config_name(camera, candidates: tuple[str, ...]) -> str | None:
+    """First candidate name that actually exists on this camera, or None.
+
+    Config node names are NOT portable: aperture is 'f-number' on Nikon
+    PTP but 'aperture' on Canon, and asking for a name the camera doesn't
+    have raises a bare GPhoto2Error [-2] Bad parameters that says nothing
+    about which name was wrong. Same lesson as imagequality vs the
+    non-existent imageformat — discover, don't assume."""
+    available = set(list_config_names(camera))
+    return next((c for c in candidates if c in available), None)
+
+
+# Aperture: Nikon PTP calls it "f-number"; other vendors differ. Ordered
+# most-likely-first for this project's camera.
+APERTURE_NAMES = ("f-number", "aperture", "fnumber", "aperturevalue")
+_aperture_node: str | None = None
+
+
+def resolve_aperture_name(camera) -> str | None:
+    """Memoised — the name depends on the camera model, which doesn't
+    change across a reconnect, and each lookup costs a PTP round trip."""
+    global _aperture_node
+    if _aperture_node is None:
+        _aperture_node = find_config_name(camera, APERTURE_NAMES)
+    return _aperture_node
 
 
 def set_config(camera, name: str, value):
@@ -336,7 +409,16 @@ def _apply_static_settings(camera, plan: dict, include_iso: bool = True) -> None
     if include_iso and "iso" in plan:
         set_config(camera, "iso", str(plan["iso"]))
     if "aperture" in plan:
-        set_config(camera, "aperture", plan["aperture"])
+        node = resolve_aperture_name(camera)
+        if node is None:
+            raise RuntimeError(
+                f"This camera exposes no aperture config node (tried "
+                f"{list(APERTURE_NAMES)}). If the lens has no electronic "
+                "aperture coupling, set it on the lens/body and remove "
+                "'aperture' from the plans in bracket_plans.py. Available "
+                f"nodes: {list_config_names(camera)}"
+            )
+        set_config(camera, node, plan["aperture"])
 
 
 def iso_for_step(plan: dict, shutter_speed: str) -> int | None:

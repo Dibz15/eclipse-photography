@@ -4,14 +4,19 @@ import types
 import pytest
 
 from eclipse.camera import (
+    APERTURE_NAMES,
     DryRunCamera,
     _force_capture_target_to_card,
+    find_config_name,
     is_raw_jpeg_combo_quality,
     iso_for_step,
+    list_config_names,
     pick_card_choice,
+    release,
     shutter_speed_seconds,
     trigger_capture_one,
     unknown_iso_override_keys,
+    verify_required_config_nodes,
 )
 
 
@@ -490,3 +495,122 @@ def test_download_failure_does_not_break_confirmation(tmp_path, fake_gphoto2_mod
     # A monitoring download is strictly optional -- losing it must never
     # cost the frame it was monitoring.
     assert cam.trigger_capture_one(camera, event_timeout=1.0, download_dir=tmp_path) is True
+
+
+# --------------------------------------------------------------------------
+# Config node discovery. Regression: 'aperture' does not exist on this
+# Nikon (it is 'f-number'), which surfaced as a bare GPhoto2Error [-2]
+# Bad parameters partway through the first bracket of a live rehearsal.
+# --------------------------------------------------------------------------
+
+class _TreeNode:
+    """Minimal stand-in for a gphoto2 config tree with named children."""
+
+    def __init__(self, name, children=None):
+        self._name = name
+        self._children = children or []
+
+    def get_name(self):
+        return self._name
+
+    def count_children(self):
+        return len(self._children)
+
+    def get_child(self, i):
+        return self._children[i]
+
+    def get_child_by_name(self, name):
+        for c in self._children:
+            if c.get_name() == name:
+                return c
+        raise RuntimeError("[-2] Bad parameters")
+
+    def set_value(self, value):
+        self.value = value
+
+
+class _TreeCamera:
+    def __init__(self, leaf_names):
+        self._root = _TreeNode("main", [_TreeNode(n) for n in leaf_names])
+
+    def get_config(self):
+        return self._root
+
+    def set_config(self, cfg):
+        pass
+
+
+NIKON_NODES = ["iso", "shutterspeed", "f-number", "imagequality", "capturetarget"]
+CANON_NODES = ["iso", "shutterspeed", "aperture", "imagequality", "capturetarget"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_aperture_memo():
+    import eclipse.camera as cam
+
+    cam._aperture_node = None
+    yield
+    cam._aperture_node = None
+
+
+def test_list_config_names_returns_leaves():
+    assert list_config_names(_TreeCamera(NIKON_NODES)) == sorted(NIKON_NODES)
+
+
+def test_find_config_name_picks_the_one_that_exists():
+    assert find_config_name(_TreeCamera(NIKON_NODES), APERTURE_NAMES) == "f-number"
+    assert find_config_name(_TreeCamera(CANON_NODES), APERTURE_NAMES) == "aperture"
+
+
+def test_find_config_name_returns_none_when_absent():
+    assert find_config_name(_TreeCamera(["iso", "shutterspeed"]), APERTURE_NAMES) is None
+
+
+def test_apply_static_settings_uses_discovered_aperture_node():
+    import eclipse.camera as cam
+
+    camera = _TreeCamera(NIKON_NODES)
+    cam._apply_static_settings(camera, {"aperture": "f/11"}, include_iso=False)
+    # Written to f-number, not the non-existent 'aperture'.
+    assert camera._root.get_child_by_name("f-number").value == "f/11"
+
+
+def test_apply_static_settings_error_names_the_available_nodes():
+    import eclipse.camera as cam
+
+    camera = _TreeCamera(["iso", "shutterspeed"])
+    with pytest.raises(RuntimeError, match="no aperture config node"):
+        cam._apply_static_settings(camera, {"aperture": "f/11"}, include_iso=False)
+
+
+def test_verify_required_config_nodes_passes_on_nikon():
+    verify_required_config_nodes(_TreeCamera(NIKON_NODES))  # must not raise
+
+
+def test_verify_required_config_nodes_flags_missing_aperture():
+    with pytest.raises(RuntimeError, match="missing required config node"):
+        verify_required_config_nodes(_TreeCamera(["iso", "shutterspeed"]))
+
+
+def test_verify_required_config_nodes_flags_missing_shutterspeed():
+    with pytest.raises(RuntimeError, match="shutterspeed"):
+        verify_required_config_nodes(_TreeCamera(["iso", "f-number"]))
+
+
+def test_release_never_raises_on_a_dead_camera():
+    class Dead:
+        def exit(self):
+            raise OSError("[-53] Could not claim the USB device")
+
+    release(Dead())  # must not propagate -- this is the recovery path
+
+
+def test_release_calls_exit_when_healthy():
+    class Live:
+        called = False
+
+        def exit(self):
+            Live.called = True
+
+    release(Live())
+    assert Live.called

@@ -30,6 +30,7 @@ eclipse-throughput = "eclipse.throughput_test:main"
 eclipse-run = "eclipse.run_eclipse:main"
 eclipse-focus-check = "eclipse.focus_check:main"
 eclipse-rehearse = "eclipse.rehearse:main"
+eclipse-camera-check = "eclipse.camera_check:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -13,6 +13,8 @@ from __future__ import annotations
 import datetime as dt
 import gc
 import logging
+import platform
+import subprocess
 import time
 from pathlib import Path
 
@@ -101,74 +103,6 @@ class DryRunCamera:
 # Real camera
 # --------------------------------------------------------------------------
 
-def verify_required_config_nodes(camera) -> None:
-    """Confirm the config nodes every bracket depends on actually exist,
-    at connect time rather than at the first capture.
-
-    Learned the hard way: 'aperture' doesn't exist on this Nikon (it's
-    'f-number'), and the failure surfaced as a bare [-2] Bad parameters
-    midway through the first bracket of a rehearsal. Checking up front
-    turns that into a clear message before anything is scheduled."""
-    available = set(list_config_names(camera))
-    missing = [n for n in ("iso", "shutterspeed") if n not in available]
-    if resolve_aperture_name(camera) is None:
-        missing.append(f"aperture (tried {list(APERTURE_NAMES)})")
-    if missing:
-        raise RuntimeError(
-            f"Camera is missing required config node(s): {missing}. "
-            f"Available nodes: {sorted(available)}"
-        )
-
-
-def release(camera) -> None:
-    """Drop the camera's USB claim. Must be called before reconnecting to
-    the same body: a dead-but-unreleased camera object keeps the claim,
-    and the new connect() then fails with [-53] Could not claim the USB
-    device. Never raises — the object may already be in a bad state, and
-    the whole point of calling this is that we're recovering."""
-    try:
-        camera.exit()
-    except Exception:
-        log.debug("camera.exit() failed while releasing (already dead?)", exc_info=True)
-    # Drop any lingering CameraWidget/Camera references so libgphoto2
-    # finalises the underlying object and frees the USB claim. Without
-    # this a reconnect can still hit [-53] Could not claim the USB device.
-    gc.collect()
-
-
-def connect(
-    port: str | None = None,
-    dry_run: bool = False,
-    capture_target: str | None = None,
-    enforce_capture_target: bool = True,
-):
-    if dry_run:
-        log.info("Dry run: using simulated camera, no hardware required.")
-        return DryRunCamera()
-
-    import gphoto2 as gp  # lazy import, see module docstring
-
-    camera = gp.Camera()
-    if port:
-        try:
-            port_info_list = gp.PortInfoList()
-            port_info_list.load()
-            idx = port_info_list.lookup_path(port)
-            camera.set_port_info(port_info_list[idx])
-        except gp.GPhoto2Error:
-            log.warning(
-                "Couldn't select port %s explicitly, falling back to auto-detect", port
-            )
-    camera.init()
-    log.info("Connected to camera%s", f" on {port}" if port else " (auto-detected)")
-
-    if enforce_capture_target:
-        verify_required_config_nodes(camera)
-        _force_capture_target_to_card(camera, override=capture_target)
-
-    return camera
-
-
 def list_config_names(camera) -> list[str]:
     """Every settable leaf node name the camera exposes. Used for
     discovery and for error messages — when a name we expect is missing,
@@ -210,6 +144,188 @@ def resolve_aperture_name(camera) -> str | None:
     if _aperture_node is None:
         _aperture_node = find_config_name(camera, APERTURE_NAMES)
     return _aperture_node
+
+
+def verify_required_config_nodes(camera) -> None:
+    """Confirm the config nodes every bracket depends on actually exist,
+    at connect time rather than at the first capture.
+
+    Learned the hard way: 'aperture' doesn't exist on this Nikon (it's
+    'f-number'), and the failure surfaced as a bare [-2] Bad parameters
+    midway through the first bracket of a rehearsal. Checking up front
+    turns that into a clear message before anything is scheduled."""
+    available = set(list_config_names(camera))
+    missing = [n for n in ("iso", "shutterspeed") if n not in available]
+    if resolve_aperture_name(camera) is None:
+        missing.append(f"aperture (tried {list(APERTURE_NAMES)})")
+    if missing:
+        raise RuntimeError(
+            f"Camera is missing required config node(s): {missing}. "
+            f"Available nodes: {sorted(available)}"
+        )
+
+
+# macOS runs a PTP daemon that claims any camera the moment it finishes
+# enumerating on USB. gphoto2 then can't claim it and fails with [-53]
+# Could not claim the USB device -- permanently, since the daemon never
+# yields. Killing it frees the device; launchd restarts it on demand, so
+# this is the long-standing documented workaround rather than a
+# persistent system change. The name has varied across macOS releases.
+PTP_DAEMON_NAMES = ("PTPCamera", "ptpcamerad")
+
+
+def is_usb_claim_error(error: BaseException) -> bool:
+    """True for the 'something else already owns this camera' failure.
+    Matched on the gphoto2 error code in the message rather than an
+    exception type, since python-gphoto2 raises one class for everything."""
+    return "-53" in str(error) or "claim the usb device" in str(error).lower()
+
+
+_last_daemon_kill = 0.0
+
+# Killing the daemon makes launchd relaunch it, and it re-grabs the
+# camera. Killing again immediately just loses the same race faster, so
+# refuse to do it more often than this.
+DAEMON_KILL_COOLDOWN = 15.0
+
+
+def free_macos_usb_claim(force: bool = False) -> bool:
+    """Stop the macOS PTP daemon(s) so gphoto2 can claim the camera.
+
+    No-op off macOS. Returns True if a daemon was actually stopped, so
+    callers can decide whether an immediate retry is worth it. Never
+    raises: this is a best-effort recovery step."""
+    global _last_daemon_kill
+    if platform.system() != "Darwin":
+        return False
+    now = time.monotonic()
+    if not force and now - _last_daemon_kill < DAEMON_KILL_COOLDOWN:
+        # Already stopped it moments ago and it came back. Repeating the
+        # kill just races launchd; waiting is the only thing that helps.
+        log.debug("Skipping PTP daemon kill — tried %.1fs ago", now - _last_daemon_kill)
+        return False
+    _last_daemon_kill = now
+    stopped = []
+    for name in PTP_DAEMON_NAMES:
+        try:
+            result = subprocess.run(
+                ["killall", name], capture_output=True, timeout=5, check=False
+            )
+            if result.returncode == 0:
+                stopped.append(name)
+        except Exception:
+            log.debug("killall %s failed", name, exc_info=True)
+    if stopped:
+        log.info(
+            "Stopped macOS PTP daemon(s) %s to free the camera's USB claim "
+            "(they relaunch on demand)",
+            stopped,
+        )
+    return bool(stopped)
+
+
+def release(camera) -> None:
+    """Drop the camera's USB claim. Must be called before reconnecting to
+    the same body: a dead-but-unreleased camera object keeps the claim,
+    and the new connect() then fails with [-53] Could not claim the USB
+    device. Never raises — the object may already be in a bad state, and
+    the whole point of calling this is that we're recovering."""
+    try:
+        camera.exit()
+    except Exception:
+        log.debug("camera.exit() failed while releasing (already dead?)", exc_info=True)
+    # Drop any lingering CameraWidget/Camera references so libgphoto2
+    # finalises the underlying object and frees the USB claim. Without
+    # this a reconnect can still hit [-53] Could not claim the USB device.
+    gc.collect()
+
+
+# Freeing a USB claim isn't instantaneous: after the macOS PTP daemon is
+# stopped, the device needs a moment to be released and re-detected, and
+# retrying init() immediately just yields [-105] Unknown model. These
+# bound how patient connect() is on its own, before any caller-level
+# retry loop.
+CONNECT_ATTEMPTS = 4
+CONNECT_RETRY_DELAY = 2.0
+
+
+def _new_camera(gp, port: str | None):
+    """A fresh Camera with port info applied. A failed init() leaves the
+    object unusable, so each attempt needs a new one."""
+    camera = gp.Camera()
+    if port:
+        try:
+            port_info_list = gp.PortInfoList()
+            port_info_list.load()
+            idx = port_info_list.lookup_path(port)
+            camera.set_port_info(port_info_list[idx])
+        except gp.GPhoto2Error:
+            log.warning("Couldn't select port %s explicitly, falling back to auto-detect", port)
+    return camera
+
+
+def connect(
+    port: str | None = None,
+    dry_run: bool = False,
+    capture_target: str | None = None,
+    enforce_capture_target: bool = True,
+    attempts: int = CONNECT_ATTEMPTS,
+    free_claim: bool = False,
+):
+    """`attempts` exists so callers that retry themselves can pass 1.
+    Nesting this loop inside _reconnect_with_retries multiplied the
+    daemon kills (4 per outer attempt), which hammered launchd and made
+    recovery strictly less likely.
+
+    `free_claim` defaults to FALSE deliberately. Killing the macOS PTP
+    daemon automatically during a run proved worse than useless: launchd
+    relaunches it, it re-grabs the camera, and the kill/relaunch race
+    left the device in a worse state than leaving it alone. Automatically
+    killing system processes on the critical path of a one-shot event is
+    not a trade worth making. Enable it deliberately via config, or use
+    `eclipse-camera-check --fix`, which is an explicit human decision."""
+    if dry_run:
+        log.info("Dry run: using simulated camera, no hardware required.")
+        return DryRunCamera()
+
+    import gphoto2 as gp  # lazy import, see module docstring
+
+    for attempt in range(1, attempts + 1):
+        camera = _new_camera(gp, port)
+        try:
+            camera.init()
+            break
+        except gp.GPhoto2Error as e:
+            if attempt == attempts:
+                raise
+            # [-53] means something else owns the device — on macOS,
+            # usually the system PTP daemon. Freeing it helps, but the
+            # release isn't instant, so either way we wait before the
+            # next attempt rather than retrying into [-105] Unknown model.
+            if free_claim and is_usb_claim_error(e):
+                free_macos_usb_claim()
+            elif is_usb_claim_error(e):
+                log.info(
+                    "Camera is claimed by another process. Power-cycle the "
+                    "camera, or run `eclipse-camera-check --fix` to stop the "
+                    "macOS PTP daemon."
+                )
+            log.info(
+                "Connect attempt %d/%d failed (%s); retrying in %.1fs",
+                attempt,
+                attempts,
+                e,
+                CONNECT_RETRY_DELAY,
+            )
+            time.sleep(CONNECT_RETRY_DELAY)
+
+    log.info("Connected to camera%s", f" on {port}" if port else " (auto-detected)")
+
+    if enforce_capture_target:
+        verify_required_config_nodes(camera)
+        _force_capture_target_to_card(camera, override=capture_target)
+
+    return camera
 
 
 def set_config(camera, name: str, value):

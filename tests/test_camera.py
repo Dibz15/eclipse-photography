@@ -11,6 +11,7 @@ from eclipse.camera import (
     _force_capture_target_to_card,
     find_config_name,
     is_raw_jpeg_combo_quality,
+    is_usb_claim_error,
     iso_for_step,
     list_config_names,
     pick_card_choice,
@@ -715,3 +716,236 @@ def test_burst_hard_stop_already_passed_fires_nothing_extra():
     # Returns promptly rather than running the full 3s.
     assert time.monotonic() - started < 1.0
     assert n >= 0
+
+
+# --------------------------------------------------------------------------
+# macOS PTP daemon. After a replug the device enumerates ([-105] Unknown
+# model) and then the system daemon claims it ([-53]), which never yields
+# on its own -- so retrying alone can never succeed, no matter the budget.
+# --------------------------------------------------------------------------
+
+def test_is_usb_claim_error_matches_the_gphoto_code():
+    assert is_usb_claim_error(RuntimeError("[-53] Could not claim the USB device"))
+    assert is_usb_claim_error(OSError("could not claim the usb device"))
+
+
+def test_is_usb_claim_error_ignores_other_failures():
+    # [-105] is the mid-enumeration state, which DOES resolve by waiting.
+    assert not is_usb_claim_error(RuntimeError("[-105] Unknown model"))
+    assert not is_usb_claim_error(RuntimeError("[-2] Bad parameters"))
+
+
+def test_free_macos_usb_claim_is_a_noop_off_darwin(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam.platform, "system", lambda: "Linux")
+    called = []
+    monkeypatch.setattr(cam.subprocess, "run", lambda *a, **k: called.append(a))
+    assert cam.free_macos_usb_claim() is False
+    assert called == []
+
+
+def test_free_macos_usb_claim_stops_daemons_on_darwin(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam.platform, "system", lambda: "Darwin")
+    killed = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        killed.append(argv[1])
+        return _Result()
+
+    monkeypatch.setattr(cam.subprocess, "run", fake_run)
+    assert cam.free_macos_usb_claim() is True
+    assert killed == list(cam.PTP_DAEMON_NAMES)
+
+
+def test_free_macos_usb_claim_survives_killall_failure(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam.platform, "system", lambda: "Darwin")
+
+    def boom(*a, **k):
+        raise OSError("killall missing")
+
+    monkeypatch.setattr(cam.subprocess, "run", boom)
+    assert cam.free_macos_usb_claim() is False  # must not raise
+
+
+# --------------------------------------------------------------------------
+# connect() retry. Regression: freeing the macOS PTP claim and retrying
+# init() IMMEDIATELY yields [-105] Unknown model, because the device needs
+# a moment to be re-detected. With no delay and no further attempt, the
+# very first connect of a run failed outright.
+# --------------------------------------------------------------------------
+
+class _FakeGPhoto2:
+    """Stand-in gphoto2 module whose init() fails a scripted number of
+    times before succeeding."""
+
+    class GPhoto2Error(Exception):
+        pass
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        self.init_calls = 0
+        outer = self
+
+        class _Cam:
+            def init(self):
+                outer.init_calls += 1
+                if outer.errors:
+                    raise outer.GPhoto2Error(outer.errors.pop(0))
+
+            def exit(self):
+                pass
+
+        self._cam_cls = _Cam
+
+    def Camera(self):
+        return self._cam_cls()
+
+
+@pytest.fixture
+def _fast_connect_retry(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam, "CONNECT_RETRY_DELAY", 0.01)
+    monkeypatch.setattr(cam.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cam.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0})())
+
+
+def test_connect_recovers_from_claim_then_enumeration(monkeypatch, _fast_connect_retry):
+    # The exact observed sequence: daemon holds it, killing frees it, then
+    # the device is briefly un-identified before it comes up.
+    fake = _FakeGPhoto2(["[-53] Could not claim the USB device", "[-105] Unknown model"])
+    monkeypatch.setitem(sys.modules, "gphoto2", fake)
+    import eclipse.camera as cam
+
+    cam.connect(enforce_capture_target=False)
+    assert fake.init_calls == 3
+
+
+def test_connect_frees_claim_only_for_claim_errors(monkeypatch, _fast_connect_retry):
+    import eclipse.camera as cam
+
+    freed = []
+    monkeypatch.setattr(cam, "free_macos_usb_claim", lambda: freed.append(True) or True)
+    fake = _FakeGPhoto2(["[-105] Unknown model"])
+    monkeypatch.setitem(sys.modules, "gphoto2", fake)
+    cam.connect(enforce_capture_target=False)
+    # -105 resolves by waiting; killing the daemon would be pointless.
+    assert freed == []
+
+
+def test_connect_gives_up_after_the_attempt_budget(monkeypatch, _fast_connect_retry):
+    import eclipse.camera as cam
+
+    fake = _FakeGPhoto2(["[-53] Could not claim the USB device"] * 10)
+    monkeypatch.setitem(sys.modules, "gphoto2", fake)
+    with pytest.raises(fake.GPhoto2Error):
+        cam.connect(enforce_capture_target=False)
+    assert fake.init_calls == cam.CONNECT_ATTEMPTS
+
+
+def test_connect_succeeds_first_time_without_retrying(monkeypatch, _fast_connect_retry):
+    import eclipse.camera as cam
+
+    fake = _FakeGPhoto2([])
+    monkeypatch.setitem(sys.modules, "gphoto2", fake)
+    cam.connect(enforce_capture_target=False)
+    assert fake.init_calls == 1
+
+
+# --------------------------------------------------------------------------
+# Daemon-kill rate limiting. Regression: connect()'s own retry loop nested
+# inside _reconnect_with_retries meant ~4 daemon kills per outer attempt.
+# launchd relaunches the daemon, which re-grabs the camera, so hammering it
+# raced the relaunch and made recovery strictly LESS likely -- to the point
+# that a fresh script start could no longer connect at all.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def _darwin_killall(monkeypatch):
+    import eclipse.camera as cam
+
+    monkeypatch.setattr(cam.platform, "system", lambda: "Darwin")
+    calls = []
+
+    class _R:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv[1])
+        return _R()
+
+    monkeypatch.setattr(cam.subprocess, "run", fake_run)
+    monkeypatch.setattr(cam, "_last_daemon_kill", 0.0)
+    return calls
+
+
+def test_daemon_kill_is_rate_limited(_darwin_killall):
+    import eclipse.camera as cam
+
+    assert cam.free_macos_usb_claim() is True
+    # Immediately again: refused, because the daemon has only just been
+    # restarted by launchd and killing it again loses the same race.
+    assert cam.free_macos_usb_claim() is False
+    assert _darwin_killall == list(cam.PTP_DAEMON_NAMES)
+
+
+def test_daemon_kill_can_be_forced(_darwin_killall):
+    import eclipse.camera as cam
+
+    assert cam.free_macos_usb_claim() is True
+    # eclipse-camera-check --fix is an explicit user action, so it bypasses
+    # the cooldown.
+    assert cam.free_macos_usb_claim(force=True) is True
+
+
+def test_daemon_kill_allowed_again_after_cooldown(monkeypatch, _darwin_killall):
+    import eclipse.camera as cam
+
+    assert cam.free_macos_usb_claim() is True
+    monkeypatch.setattr(
+        cam, "_last_daemon_kill", time.monotonic() - cam.DAEMON_KILL_COOLDOWN - 1
+    )
+    assert cam.free_macos_usb_claim() is True
+
+
+def test_connect_attempts_is_caller_controllable(monkeypatch, _fast_connect_retry):
+    import eclipse.camera as cam
+
+    fake = _FakeGPhoto2(["[-53] Could not claim the USB device"] * 5)
+    monkeypatch.setitem(sys.modules, "gphoto2", fake)
+    with pytest.raises(fake.GPhoto2Error):
+        cam.connect(enforce_capture_target=False, attempts=1)
+    # attempts=1 means exactly one init(), so an outer retry loop doesn't
+    # multiply into a burst of daemon kills.
+    assert fake.init_calls == 1
+
+
+def test_connect_does_not_kill_daemon_by_default(monkeypatch, _fast_connect_retry):
+    # Auto-killing a system daemon on the critical path is opt-in only.
+    import eclipse.camera as cam
+
+    killed = []
+    monkeypatch.setattr(cam, "free_macos_usb_claim", lambda *a, **k: killed.append(1) or True)
+    fake = _FakeGPhoto2(["[-53] Could not claim the USB device"])
+    monkeypatch.setitem(sys.modules, "gphoto2", fake)
+    cam.connect(enforce_capture_target=False)
+    assert killed == []
+
+
+def test_connect_kills_daemon_when_explicitly_enabled(monkeypatch, _fast_connect_retry):
+    import eclipse.camera as cam
+
+    killed = []
+    monkeypatch.setattr(cam, "free_macos_usb_claim", lambda *a, **k: killed.append(1) or True)
+    fake = _FakeGPhoto2(["[-53] Could not claim the USB device"])
+    monkeypatch.setitem(sys.modules, "gphoto2", fake)
+    cam.connect(enforce_capture_target=False, free_claim=True)
+    assert killed == [1]

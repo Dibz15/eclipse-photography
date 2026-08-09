@@ -26,7 +26,9 @@ import yaml
 from . import bracket_plans as bp
 from .camera import (
     connect,
+    free_macos_usb_claim,
     is_raw_jpeg_combo_quality,
+    is_usb_claim_error,
     release,
     run_sequence,
     set_config,
@@ -224,9 +226,20 @@ def _reconnect_with_retries(cfg: dict, dry_run: bool, deadline: dt.datetime):
     while True:
         attempt += 1
         try:
-            return _connect_and_prepare(cfg, dry_run)
+            # attempts=1: this function owns the retry loop. Letting
+            # connect() retry too multiplies the daemon kills and races
+            # launchd instead of waiting it out.
+            return _connect_and_prepare(cfg, dry_run, attempts=1)
         except Exception as e:  # noqa: BLE001 - retried below, re-raised on timeout
             last_error = e
+            # [-53] means the device is present but owned by something
+            # else — on macOS, the system PTP daemon, which grabs a camera
+            # the moment it enumerates and never yields. Waiting longer
+            # cannot help; freeing it can.
+            if is_usb_claim_error(e) and cfg.get("camera", {}).get(
+                "auto_free_usb_claim", False
+            ):
+                free_macos_usb_claim()
             remaining = (deadline - dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
             remaining_s = remaining.total_seconds()
             if remaining_s <= 0:
@@ -244,21 +257,26 @@ def _reconnect_with_retries(cfg: dict, dry_run: bool, deadline: dt.datetime):
             delay = min(delay * 2, RECONNECT_MAX_DELAY)
     raise RuntimeError(
         f"Reconnect failed after {attempt} attempts. Check the USB cable. "
-        "On macOS a replugged camera is often grabbed by the system PTP "
-        "daemon — `killall PTPCamera` frees it."
+        "If the errors were [-53] Could not claim the USB device, something "
+        "else owns the camera: on macOS this project already tries to stop "
+        "the system PTP daemon automatically, so check for an open Image "
+        "Capture, Photos, Lightroom or a stray gphoto2 process."
     ) from last_error
 
 
-def _connect_and_prepare(cfg: dict, dry_run: bool):
+def _connect_and_prepare(cfg: dict, dry_run: bool, attempts: int | None = None):
     """connect() plus the per-session settings that don't survive a
     reconnect. Factored out so a mid-event reconnect restores the camera
     to exactly the same state as the initial connection — connect()
     itself re-forces capturetarget, but image_quality is applied here and
     would otherwise be silently lost on reconnect."""
+    kwargs = {} if attempts is None else {"attempts": attempts}
     camera = connect(
         cfg.get("camera", {}).get("port"),
         dry_run=dry_run,
         capture_target=cfg.get("camera", {}).get("capture_target"),
+        free_claim=bool(cfg.get("camera", {}).get("auto_free_usb_claim", False)),
+        **kwargs,
     )
     image_quality = cfg.get("camera", {}).get("image_quality")
     if image_quality:

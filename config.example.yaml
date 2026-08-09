@@ -19,6 +19,17 @@ camera:
                           # to see your camera's real choices, then paste one
                           # here. Leave null to not touch it (inherits whatever
                           # is already set on the camera).
+  auto_free_usb_claim: false  # macOS only. If a connect fails with [-53]
+                          # Could not claim the USB device, kill the system PTP
+                          # daemon and retry. OFF by default and that is
+                          # deliberate: launchd relaunches the daemon, which
+                          # re-grabs the camera, and the resulting race left the
+                          # device worse off than leaving it alone. Killing
+                          # system processes automatically on the critical path
+                          # of a one-shot event is not a good trade. Use
+                          # `uv run eclipse-camera-check --fix` instead, which
+                          # is an explicit decision you make, not one the
+                          # scheduler makes for you mid-eclipse.
   capture_target: null    # normally auto-detected (whichever capturetarget
                           # choice contains "card") and enforced automatically
                           # at connect time -- unlike image_quality, there's no

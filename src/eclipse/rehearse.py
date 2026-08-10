@@ -96,10 +96,12 @@ def build_config_timings(
 
     date = now.date()
     rolled = False
-    if on(date, t["C1"]) <= now:
-        # Already past today's C1 — rolling forward keeps the whole
-        # schedule in the future rather than firing the early phases in an
-        # immediate catch-up burst, which wouldn't rehearse anything.
+    if on(date, t["C4"]) <= now:
+        # Only roll once the whole event is over. Starting mid-event is
+        # useful and already handled: run_eclipse skips phases whose
+        # windows have closed, and cues past their grace period are
+        # dropped rather than replayed. Rolling on C1 instead would have
+        # meant waiting a day just to rehearse the second half.
         date = date + dt.timedelta(days=1)
         rolled = True
 
@@ -207,7 +209,7 @@ def main():
         date_str, timings, rolled = build_config_timings(cfg)
         source = f"real config.yaml timings, re-dated to {date_str}"
         if rolled:
-            source += " (today's C1 already passed, so rolled to tomorrow)"
+            source += " (today's C4 already passed, so rolled to tomorrow)"
     else:
         date_str, timings = build_synthetic_timings(
             args.start_in, args.partial_seconds, args.totality_seconds
@@ -231,10 +233,17 @@ def main():
     c1 = dt.datetime.strptime(f"{date_str} {timings['C1']}", "%Y-%m-%d %H:%M:%S")
     c4 = dt.datetime.strptime(f"{date_str} {timings['C4']}", "%Y-%m-%d %H:%M:%S")
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-    print(
-        f"\n  starts in {(c1 - now).total_seconds() / 60:.0f} min, "
-        f"runs {(c4 - c1).total_seconds() / 60:.0f} min C1->C4"
-    )
+    until_c1 = (c1 - now).total_seconds()
+    if until_c1 >= 0:
+        timing = f"starts in {until_c1 / 60:.0f} min"
+    else:
+        # Mid-event start: phases already finished are skipped, so say
+        # where we're joining rather than printing a negative countdown.
+        timing = (
+            f"ALREADY UNDERWAY — C1 was {-until_c1 / 60:.0f} min ago; "
+            "completed phases will be skipped"
+        )
+    print(f"\n  {timing}, runs {(c4 - c1).total_seconds() / 60:.0f} min C1->C4")
 
     if not args.dry_run:
         print(

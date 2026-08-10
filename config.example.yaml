@@ -74,6 +74,13 @@ camera:
                           # Don't add the time-critical ones (totality, either
                           # diamond ring) -- downloads cost window time.
 
+# Hold the machine awake for the duration of a run (macOS: caffeinate).
+# On by default and worth leaving on: gphoto2 calls have no timeout, so a
+# USB stack torn down by a sleeping laptop can hang the process outright
+# rather than raising something the reconnect logic could catch. Ignored
+# for --dry-run.
+prevent_sleep: true
+
 # Spoken cues for the things you still do by hand. Times are relative to
 # a contact: "C2-300" is five minutes before C2, "C3+2" two seconds after
 # C3. Runs on an isolated daemon thread -- a cue failing can never affect
@@ -92,20 +99,22 @@ audio_cues:
   voice: null             # macOS `say` voice name, e.g. "Daniel"; null = default
   cues:
     - at: "C2-600"
-      say: "Ten minutes. Check focus."
-    - at: "C2-240"
-      say: "Four minutes. Frame sun in top corner."
+      say: "Ten minutes to totality. Check focus and framing."
+    - at: "C2-300"
+      say: "Five minutes. Frame now so the sun sits high and upstream, about
+            two hundred pixels above centre, so it drifts through the middle
+            during totality."
     - at: "C2-60"
-      say: "One minute. Last look. Hands off."
+      say: "One minute. Last look through the viewfinder. Hands off the tripod."
     - at: "C2-20"
-      say: "Filter off."
+      say: "Filter off now."
       countdown_from: 5
     - at: "C2"
-      say: "Totality."
+      say: "Totality. Look up."
     - at: "C3-15"
-      say: "Fifteen seconds left. Get ready to add filter."
-    - at: "C3+10"
-      say: "Filter back on."
+      say: "Fifteen seconds of totality left. Get ready to replace the filter."
+    - at: "C3+8"
+      say: "Filter back on now."
       countdown_from: 3
 
 output_dir: "./eclipse_frames"

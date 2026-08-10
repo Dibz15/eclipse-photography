@@ -118,8 +118,24 @@ _NUMBER_WORDS = {
 }
 
 
-def _run_cues(schedule, voice: str | None) -> None:
+# How late a cue may be and still be worth speaking. Restarting the script
+# mid-event (or waking a laptop that slept) leaves a pile of already-due
+# cues; replaying them is worse than useless, since "five minutes to
+# totality" announced after totality is actively misleading. A few
+# seconds of grace still covers a cue that came due during a brief stall.
+DEFAULT_CUE_GRACE_SECONDS = 5.0
+
+
+def _run_cues(schedule, voice: str | None, grace_seconds: float = DEFAULT_CUE_GRACE_SECONDS) -> None:
     for when, text, countdown in schedule:
+        late_by = (_utcnow() - when).total_seconds()
+        if late_by > grace_seconds:
+            log.info(
+                "Skipping cue %r — it came due %.0fs ago (restart or stall?)",
+                text,
+                late_by,
+            )
+            continue
         if countdown:
             # Start early enough that the final word lands ON the cue time.
             start = when - dt.timedelta(seconds=countdown)
@@ -141,7 +157,12 @@ def _sleep_until(target: dt.datetime) -> None:
         time.sleep(remaining)
 
 
-def start_cue_thread(cue_specs: list[dict], contacts: dict[str, dt.datetime], voice=None):
+def start_cue_thread(
+    cue_specs: list[dict],
+    contacts: dict[str, dt.datetime],
+    voice=None,
+    grace_seconds: float = DEFAULT_CUE_GRACE_SECONDS,
+):
     """Starts cues on a daemon thread and returns it (or None if there's
     nothing to do). Daemon so it can never hold the process open, and
     every failure inside is swallowed — the capture schedule must not be
@@ -152,12 +173,18 @@ def start_cue_thread(cue_specs: list[dict], contacts: dict[str, dt.datetime], vo
 
     def runner():
         try:
-            _run_cues(schedule, voice)
+            _run_cues(schedule, voice, grace_seconds)
         except Exception:
             log.exception("Cue thread failed — captures are unaffected")
 
     thread = threading.Thread(target=runner, name="eclipse-cues", daemon=True)
     thread.start()
-    log.info("Audio cues armed: %d scheduled, first at %s UTC",
-             len(schedule), schedule[0][0].strftime("%H:%M:%S"))
+    pending = [c for c in schedule if (c[0] - _utcnow()).total_seconds() > -grace_seconds]
+    skipped = len(schedule) - len(pending)
+    log.info(
+        "Audio cues armed: %d pending%s, next at %s UTC",
+        len(pending),
+        f" ({skipped} already past, will be skipped)" if skipped else "",
+        pending[0][0].strftime("%H:%M:%S") if pending else "—",
+    )
     return thread

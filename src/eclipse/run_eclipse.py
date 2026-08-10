@@ -29,6 +29,7 @@ from .camera import (
     free_macos_usb_claim,
     is_raw_jpeg_combo_quality,
     is_usb_claim_error,
+    prevent_system_sleep,
     release,
     run_sequence,
     set_config,
@@ -376,6 +377,9 @@ def run(cfg: dict, dry_run: bool, focus_check: bool = False) -> None:
             seconds,
             "   (ZERO-LENGTH — will be skipped)" if seconds <= 0 else "",
         )
+
+    if not dry_run and cfg.get("prevent_sleep", True):
+        prevent_system_sleep()
 
     if cue_specs and audio.get("enabled", True):
         start_cue_thread(cue_specs, contacts, voice=audio.get("voice"))

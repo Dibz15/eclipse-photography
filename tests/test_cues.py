@@ -134,3 +134,46 @@ def test_cue_thread_is_a_daemon():
 
 def test_no_thread_when_no_cues():
     assert start_cue_thread([], CONTACTS) is None
+
+
+# --------------------------------------------------------------------------
+# Stale cues. Restarting mid-event (or waking a laptop that slept) leaves
+# a pile of already-due cues; replaying them is worse than silence, since
+# "five minutes to totality" announced after totality is misleading.
+# --------------------------------------------------------------------------
+
+def test_stale_cues_are_skipped(monkeypatch):
+    from eclipse import cues
+
+    spoken = []
+    monkeypatch.setattr(cues, "speak", lambda t, voice=None, timeout=20.0: spoken.append(t))
+    now = cues._utcnow()
+    schedule = [
+        (now - dt.timedelta(seconds=600), "ten minutes", None),
+        (now - dt.timedelta(seconds=60), "one minute", None),
+        (now + dt.timedelta(seconds=0.2), "filter on", None),
+    ]
+    cues._run_cues(schedule, voice=None)
+    assert spoken == ["filter on"]
+
+
+def test_cue_within_grace_still_fires(monkeypatch):
+    from eclipse import cues
+
+    spoken = []
+    monkeypatch.setattr(cues, "speak", lambda t, voice=None, timeout=20.0: spoken.append(t))
+    now = cues._utcnow()
+    # Two seconds late: a brief stall, not a restart -- still worth saying.
+    cues._run_cues([(now - dt.timedelta(seconds=2), "filter off", None)], voice=None)
+    assert spoken == ["filter off"]
+
+
+def test_grace_period_is_configurable(monkeypatch):
+    from eclipse import cues
+
+    spoken = []
+    monkeypatch.setattr(cues, "speak", lambda t, voice=None, timeout=20.0: spoken.append(t))
+    now = cues._utcnow()
+    schedule = [(now - dt.timedelta(seconds=30), "late cue", None)]
+    cues._run_cues(schedule, voice=None, grace_seconds=60)
+    assert spoken == ["late cue"]

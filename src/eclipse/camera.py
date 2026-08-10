@@ -13,7 +13,9 @@ from __future__ import annotations
 import datetime as dt
 import gc
 import logging
+import os
 import platform
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -845,3 +847,33 @@ def run_sequence(
             if remaining <= 0:
                 break
             time.sleep(min(interval, remaining))
+
+def prevent_system_sleep():
+    """Stop the machine sleeping for as long as this process lives.
+
+    A sleeping laptop is worse than a crashed one here: gphoto2 calls
+    have no timeout, so a USB stack torn down mid-call can hang the
+    process indefinitely instead of raising something the reconnect logic
+    could catch. Observed in a rehearsal — the script froze on wake and
+    had to be killed, and the restart then replayed stale audio cues.
+
+    Uses macOS `caffeinate -w <pid>`: a separate process holding the
+    assertion, which exits by itself when ours does. Nothing to clean up,
+    nothing left running if we crash. No-op elsewhere; returns the Popen
+    handle or None. Never raises."""
+    if platform.system() != "Darwin":
+        return None
+    if not shutil.which("caffeinate"):
+        log.warning("caffeinate not found — make sure the machine won't sleep mid-run")
+        return None
+    try:
+        proc = subprocess.Popen(
+            ["caffeinate", "-dimsu", "-w", str(os.getpid())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        log.warning("Couldn't start caffeinate — make sure the machine won't sleep", exc_info=True)
+        return None
+    log.info("Holding the system awake for this run (caffeinate pid %d)", proc.pid)
+    return proc

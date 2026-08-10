@@ -95,14 +95,24 @@ def test_from_config_uses_today_when_c1_still_ahead():
     assert timings == REAL_CFG["timings_utc"]  # verbatim, times of day preserved
 
 
-def test_from_config_rolls_to_tomorrow_once_c1_has_passed():
-    now = dt.datetime(2026, 8, 12, 17, 30, 0)  # after C1, mid-partial
+def test_from_config_uses_today_when_mid_event():
+    # Starting partway through is useful, not an error: run_eclipse skips
+    # phases whose windows have closed and stale cues are dropped, so
+    # there is no reason to wait a whole day to rehearse the rest.
+    now = dt.datetime(2026, 8, 12, 18, 0, 0)  # after C1, before C4
     date_str, _timings, rolled = build_config_timings(REAL_CFG, now=now)
-    assert date_str == "2026-08-13"
-    assert rolled is True
+    assert date_str == "2026-08-12"
+    assert rolled is False
 
 
-def test_from_config_rolls_when_whole_event_is_over():
+def test_from_config_uses_today_just_before_c4():
+    now = dt.datetime(2026, 8, 12, 19, 48, 1)  # C4 is 19:48:02
+    date_str, _t, rolled = build_config_timings(REAL_CFG, now=now)
+    assert date_str == "2026-08-12"
+    assert rolled is False
+
+
+def test_from_config_rolls_only_once_c4_has_passed():
     now = dt.datetime(2026, 8, 12, 23, 0, 0)
     date_str, _t, rolled = build_config_timings(REAL_CFG, now=now)
     assert date_str == "2026-08-13"

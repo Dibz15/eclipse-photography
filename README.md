@@ -82,7 +82,7 @@ for and when to run it: [`docs/workflow.md`](docs/workflow.md).
 ## Status
 
 Used for real on 2026-08-12 from Mallorca, Spain. The specific bracket tunings in `bracket_plans.py` and
-`config.example.yaml` reflect that site and that camera; treat the
+`config.spain2026.yaml` reflect that site and that camera; treat the
 *numbers* as a worked example and the *mechanisms* (recovery, timing
 math, safety guards) as the reusable part.
 

@@ -1,0 +1,55 @@
+name: Deploy framing UI to GitHub Pages
+
+# Publishes the contents of framing-ui/ (index.html and anything alongside
+# it) as this repo's GitHub Pages site, so it's served at the site root --
+# e.g. https://<user>.github.io/<repo>/ -- rather than nested under
+# /framing-ui/.
+#
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "framing-ui/**"
+      - ".github/workflows/deploy-pages.yml"
+  # Lets you trigger a redeploy manually from the Actions tab without
+  # needing a new commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; don't cancel one that's already
+# rolling out if another push comes in.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload framing-ui as the Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          # Change this if you rename or move the framing UI's directory.
+          path: ./framing-ui
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

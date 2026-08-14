@@ -1,0 +1,53 @@
+location:
+  latitude: 39.44967
+  longitude: 2.74533
+  elevation_m: 21
+date: '2026-08-12'
+timezone: Europe/Madrid
+camera:
+  port: null
+  image_quality: NEF
+  bracket_overhead: 3.0
+  bracket_timeout_margin: 3.02
+  auto_free_usb_claim: false
+  download_phases: ["partial_pre_totality", "partial_post_totality"]
+output_dir: ./eclipse_frames
+timings_utc:
+  C1: '17:38:16'
+  C2: '18:31:15'
+  max: '18:32:03'
+  C3: '18:32:51'
+  C4: '19:22:39'
+prevent_sleep: true
+focus_check:
+  low_threshold: 5
+  high_threshold: 9
+  roi:
+  - 2000
+  - 3000
+  - 2200
+  - 3400
+audio_cues:
+  enabled: true
+  voice: null             # macOS `say` voice name, e.g. "Daniel"; null = default
+  cues:
+    - at: "C1-10"
+      say: "10 seconds to first contact."
+    - at: "C2-1200"
+      say: "Twenty minutes to totality."
+    - at: "C2-600"
+      say: "Ten minutes. Check focus."
+    - at: "C2-240"
+      say: "Four minutes. Frame sun in top corner."
+    - at: "C2-60"
+      say: "One minute. Last look at viewfinder."
+    - at: "C2-15"
+      say: "Filter off."
+      countdown_from: 5
+    - at: "C2"
+      say: "Totality."
+    - at: "C3-5"
+      say: "Five seconds left. Get ready to add filter."
+    - at: "C3+9"
+      say: "Filter on."
+      countdown_from: 3

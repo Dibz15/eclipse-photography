@@ -28,7 +28,7 @@ from .camera import DEFAULT_BRACKET_OVERHEAD, shutter_speed_seconds
 # deep_crescent_bracket below.
 partial_phase_bracket = {
     "interval_seconds": 300,  # one bracket every 5 min
-    "shutter_speeds": ["1/500", "1/250", "1/125", "1/60", "1/30"],  # centered ~1/250s, f/11 ISO100
+    "shutter_speeds": ["1/250", "1/125", "1/60", "1/30", "1/15", "1/10", "1/5"],  # centered ~1/250s, f/11 ISO100
     "iso": 100,
     "aperture": "f/11",
 }
@@ -42,7 +42,7 @@ partial_phase_bracket = {
 # which diamond_ring_burst covers separately once the filter comes off.
 deep_crescent_bracket = {
     "interval_seconds": 30,
-    "shutter_speeds": ["1/125", "1/60", "1/30", "1/15"],  # ~2 stops brighter than partial_phase_bracket
+    "shutter_speeds": ["1/60", "1/30", "1/15", "1/10", "1/2"],  # ~2 stops brighter than partial_phase_bracket
     "iso": 100,
     "aperture": "f/11",
 }

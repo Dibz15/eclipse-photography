@@ -19,6 +19,7 @@ camera:
                           # to see your camera's real choices, then paste one
                           # here. Leave null to not touch it (inherits whatever
                           # is already set on the camera).
+                          
   auto_free_usb_claim: false  # macOS only. If a connect fails with [-53]
                           # Could not claim the USB device, kill the system PTP
                           # daemon and retry. OFF by default and that is
@@ -30,6 +31,7 @@ camera:
                           # `uv run eclipse-camera-check --fix` instead, which
                           # is an explicit decision you make, not one the
                           # scheduler makes for you mid-eclipse.
+
   capture_target: null    # normally auto-detected (whichever capturetarget
                           # choice contains "card") and enforced automatically
                           # at connect time -- unlike image_quality, there's no
@@ -38,11 +40,13 @@ camera:
                           # choice on your camera; run
                           # `uv run eclipse-throughput --list-capture-target`
                           # to see the raw choices.
+
   bracket_overhead: null  # AVERAGE per-shot overhead (seconds) added to each
                           # shutter speed's own exposure time to ESTIMATE how
                           # long shots and passes take -- drives trim_to_fit()'s
                           # ladder trimming and run_bracket_once()'s per-shot
                           # "does this still fit?" check.
+
   bracket_timeout_margin: null  # MAX per-shot overhead + safety (seconds), used
                           # to size each shot's event_timeout -- i.e. when to give
                           # up on a shot. Deliberately a different (larger) value
@@ -53,7 +57,9 @@ camera:
                           # measured on one specific camera/card/cable. Run
                           # `uv run eclipse-throughput --bracket-test --write`
                           # to calibrate both against your actual gear.
-  download_phases: []     # phase labels whose frames should be downloaded in
+
+  download_phases: ["partial_pre_totality", "partial_post_totality"]     
+                          # phase labels whose frames should be downloaded in
                           # FULL to <output_dir>/monitor/ -- for spotting focus
                           # drift or lens fogging mid-event without the LCD
                           # (which is dark while tethered). Full files, not the
@@ -98,23 +104,25 @@ audio_cues:
   enabled: true
   voice: null             # macOS `say` voice name, e.g. "Daniel"; null = default
   cues:
+    - at: "C1-10"
+      say: "10 seconds to first contact."
+    - at: "C2-1200"
+      say: "Twenty minutes to totality."
     - at: "C2-600"
-      say: "Ten minutes to totality. Check focus and framing."
-    - at: "C2-300"
-      say: "Five minutes. Frame now so the sun sits high and upstream, about
-            two hundred pixels above centre, so it drifts through the middle
-            during totality."
+      say: "Ten minutes. Check focus."
+    - at: "C2-240"
+      say: "Four minutes. Frame sun in top corner."
     - at: "C2-60"
-      say: "One minute. Last look through the viewfinder. Hands off the tripod."
-    - at: "C2-20"
-      say: "Filter off now."
+      say: "One minute. Last look at viewfinder."
+    - at: "C2-15"
+      say: "Filter off."
       countdown_from: 5
     - at: "C2"
-      say: "Totality. Look up."
-    - at: "C3-15"
-      say: "Fifteen seconds of totality left. Get ready to replace the filter."
-    - at: "C3+8"
-      say: "Filter back on now."
+      say: "Totality."
+    - at: "C3-5"
+      say: "Five seconds left. Get ready to add filter."
+    - at: "C3+9"
+      say: "Filter on."
       countdown_from: 3
 
 output_dir: "./eclipse_frames"

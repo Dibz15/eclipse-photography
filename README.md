@@ -7,9 +7,9 @@ tethered over USB, which I built for my 2012-era Nikon D5500 and a Mac, for the
 ![filtered partial eclipse image taken with my Nikon D5500](./media/DSC_0037_1.jpg)
 
 If you've looked into automating eclipse photography on a
-Mac, you've probably found the same thing we did: the tooling is thin,
+Mac, you've probably found the same thing I did: the tooling is thin,
 the Nikon-specific behavior is undocumented, and most guides assume a
-newer body or specific software. [Eclipse Maestro](http://xjubier.free.fr/en/site_pages/solar_eclipses/Solar_Eclipse_Maestro_Photography_Software.html) used to be the free tool of choice, but unfortunately it doesn't support newer macOS builds. This project exists because none of the existing options for macOS (that I could find) were both *hands-off* and *trustworthy* for an event that happens once, lasts about ninety seconds, and cannot be reshot! Please note that while this repo was designed and tested for macOS, much of the code may still work on other OSes. Feel free to try or adapt for your use-case.
+newer camera body or specific software. [Eclipse Maestro](http://xjubier.free.fr/en/site_pages/solar_eclipses/Solar_Eclipse_Maestro_Photography_Software.html) used to be the free tool of choice, but unfortunately it doesn't support newer macOS builds. This project exists because none of the existing options for macOS (that I could find) were both *hands-off* and *trustworthy* for an event that happens once, lasts only ninety seconds, and cannot be reshot! Please note that while this repo was designed and tested for macOS, much of the code may still work on other OSes. Feel free to try or adapt for your use-case.
 
 ## What it does
 
@@ -86,5 +86,8 @@ Used for real on 2026-08-12 from Mallorca, Spain. The specific bracket tunings i
 *numbers* as a worked example and the *mechanisms* (recovery, timing
 math, safety guards) as the reusable part.
 
-No license file is included yet — add one appropriate to your intended
-use before redistributing.
+## Totality framing help
+
+If you don't have a star tracking mount, the sun during totality will drift through your frame. Over 400mm focal length, this can become a considerable portion of your frame, even during a short totality. To check how the sun will drift through your camera frame during totality, I created a framing UI to help you figure out the perfect framing pre-totality for your eclipse. You can access the UI here: [https://dibz15.github.io/eclipse-photography/](https://dibz15.github.io/eclipse-photography/).
+
+Copyright 2026 Dibz15 - MIT License. See [LICENSE](./LICENSE)
